@@ -185,7 +185,7 @@ async function accountAction(kind) {
   render();
 }
 
-const ui = { view: "home", treeId: null, edit: false, expanded: {} };
+const ui = { view: "home", treeId: null, edit: false, expanded: {}, mode: "map", zoom: null, sheet: null, recenter: false };
 
 /* ---------- lookups & math ---------- */
 const getTree = (id) => state.trees.find((t) => t.id === id);
@@ -269,7 +269,7 @@ function openModal({ title, text, fields = [], confirm = "Save", danger = false,
   const first = document.querySelector("#modal input, #modal textarea, #modal select");
   if (first) setTimeout(() => first.focus(), 30);
 }
-function closeModal() { document.getElementById("modal").innerHTML = ""; modalSubmit = null; }
+function closeModal() { document.getElementById("modal").innerHTML = ""; modalSubmit = null; ui.sheet = null; }
 document.addEventListener("submit", (e) => {
   if (e.target.id !== "modal-form") return;
   e.preventDefault();
@@ -278,7 +278,10 @@ document.addEventListener("submit", (e) => {
   const fn = modalSubmit; closeModal();
   if (fn) { fn(vals); save(); render(); }
 });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { closeModal(); return; }
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches?.("g[data-action]")) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent("click", { bubbles: true })); }
+});
 
 /* ---------- views ---------- */
 function statusWindow() {
@@ -306,14 +309,17 @@ function homeView() {
   <div class="topbar"><h1>Skill Tree</h1><div class="btnrow">${syncPill()}<button class="iconbtn" data-action="settings" type="button">Settings</button></div></div>
   ${statusWindow()}
   <div class="trees">
-    ${state.trees.map((t) => {
+    ${state.trees.map((t, ti) => {
       const s = treeStats(t), [r] = rankFor(t);
       return `
       <button class="tree-card" type="button" data-action="open-tree" data-id="${t.id}">
-        <div class="row"><h2>${esc(t.name)}</h2><span class="rankpill">${r}-RANK</span></div>
-        ${t.desc ? `<p>${esc(t.desc)}</p>` : `<p></p>`}
-        <div class="bar"><i style="width:${s.pct * 100}%"></i></div>
-        <div class="meta" style="margin-top:6px"><span>${s.done} / ${s.total} quests</span><span>${s.xp} / ${s.max} XP</span></div>
+        <span class="card-hex">${iconHtml(iconFor(t, ti), 24)}</span>
+        <span class="card-body">
+          <span class="row"><h2>${esc(t.name)}</h2><span class="rankpill">${r}-RANK</span></span>
+          ${t.desc ? `<p>${esc(t.desc)}</p>` : `<p></p>`}
+          <span class="bar"><i style="width:${s.pct * 100}%"></i></span>
+          <span class="meta" style="margin-top:6px"><span>${s.done} / ${s.total} quests</span><span>${s.xp} / ${s.max} XP</span></span>
+        </span>
       </button>`;
     }).join("")}
     <button class="tree-card add-card" type="button" data-action="add-tree">+ New skill tree</button>
@@ -321,7 +327,235 @@ function homeView() {
   <p class="foot">${session ? "Progress syncs across your signed-in devices." : "Progress saves on this device. Sign in from Settings to sync."}</p>`;
 }
 
+/* ---------- icons (original line set, 24x24) ---------- */
+const ICONS = {
+  checklist: ['Checklist', '<path d="M3 6l2 2 3-3M3 13l2 2 3-3M11 6h10M11 14h10M11 20h10"/>'],
+  search: ['Magnifier', '<circle cx="11" cy="11" r="7"/><path d="M21 21l-5-5"/>'],
+  compass: ['Compass', '<circle cx="12" cy="12" r="10"/><path d="M16 8l-2.5 5.5L8 16l2.5-5.5z"/>'],
+  users: ['People', '<circle cx="9" cy="8" r="4"/><path d="M2 21v-1a6 6 0 0 1 12 0v1M16 3.5a4 4 0 0 1 0 7.5M22 21v-1a6 6 0 0 0-4-5.6"/>'],
+  chart: ['Chart', '<path d="M3 3v18h18M8 16v-5M13 16V8M18 16V7"/>'],
+  target: ['Target', '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'],
+  zap: ['Lightning', '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>'],
+  book: ['Book', '<path d="M2 4h6a4 4 0 0 1 4 4v13a3 3 0 0 0-3-3H2zM22 4h-6a4 4 0 0 0-4 4v13a3 3 0 0 1 3-3h7z"/>'],
+  star: ['Star', '<path d="M12 2l3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1z"/>'],
+  flag: ['Flag', '<path d="M4 22V4M4 4h13l-2 4 2 4H4"/>'],
+  chat: ['Chat', '<path d="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 12z"/>'],
+  bulb: ['Idea', '<path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V16h8v-1.3A7 7 0 0 0 12 2z"/>'],
+  shield: ['Shield', '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'],
+  coins: ['Coins', '<circle cx="8" cy="8" r="6"/><path d="M18.1 10.4a6 6 0 1 1-7.7 7.7M7 6h1v4"/>'],
+  heart: ['Heart', '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8z"/>'],
+  trending: ['Growth', '<path d="M22 7l-8.5 8.5-5-5L2 17M16 7h6v6"/>'],
+  rocket: ['Rocket', '<path d="M4.5 16.5c-1.5 1.3-2 5-2 5s3.7-.5 5-2c.7-.8.7-2.1-.1-2.9a2.2 2.2 0 0 0-2.9-.1zM12 15l-3-3a22 22 0 0 1 2-4A13 13 0 0 1 22 2c0 2.7-.8 7.5-6 11a22 22 0 0 1-4 2zM9 12H4s.6-3 2-4c1.6-1.1 5 0 5 0M12 15v5s3-.6 4-2c1.1-1.6 0-5 0-5"/>'],
+  dumbbell: ['Dumbbell', '<path d="M6.5 6.5v11M17.5 6.5v11M3 9v6M21 9v6M6.5 12h11"/>'],
+  pen: ['Pen', '<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'],
+  crown: ['Crown', '<path d="M2 20h20M3 7l5 5 4-7 4 7 5-5-2 10H5z"/>'],
+  trophy: ['Trophy', '<path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0zM17 5h3v2a3 3 0 0 1-3 3M7 5H4v2a3 3 0 0 0 3 3"/>'],
+  code: ['Code', '<path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/>'],
+  sprout: ['Sprout', '<path d="M7 20h10M12 20V10M12 10C12 6 9 4 5 4c0 4 3 6 7 6zM12 13c0-3 2.5-5 6-5 0 3.5-2.5 5-6 5z"/>'],
+  clock: ['Clock', '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>'],
+  briefcase: ['Briefcase', '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>'],
+  cap: ['Graduation', '<path d="M22 10L12 5 2 10l10 5 10-5zM6 12v5c3 2 9 2 12 0v-5"/>'],
+};
+const ICON_KEYWORDS = [
+  [/backlog|story|stories|task/i, "checklist"], [/discover|customer|user|research/i, "search"], [/vision|strateg|direction|roadmap/i, "compass"],
+  [/stakeholder|influence|team|people|lead|relationship/i, "users"], [/metric|outcome|data|analy|measure/i, "chart"], [/invest|money|financ|budget|wealth/i, "coins"],
+  [/read|learn|book|study/i, "book"], [/health|fit|gym|strength|workout/i, "dumbbell"], [/code|tech|engineer|program/i, "code"],
+  [/product/i, "rocket"], [/writ/i, "pen"], [/career|job|work/i, "briefcase"], [/communicat|speak|present/i, "chat"], [/habit|routine|time/i, "clock"],
+];
+const ICON_FALLBACK = ["zap", "target", "star", "flag", "bulb", "shield", "trending", "crown", "sprout", "heart"];
+const iconFor = (o, i = 0) => (o.icon && ICONS[o.icon] ? o.icon : (ICON_KEYWORDS.find(([re]) => re.test(o.name || ""))?.[1]) || ICON_FALLBACK[i % ICON_FALLBACK.length]);
+const iconOptions = (cur) => [{ value: "", label: "Automatic (based on name)" }, ...Object.entries(ICONS).map(([k, [label]]) => ({ value: k, label }))];
+const iconSvg = (key, size, x, y) => `<g class="m-icon" transform="translate(${x - size / 2} ${y - size / 2}) scale(${size / 24})" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[key][1]}</g>`;
+const iconHtml = (key, size = 22) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[key][1]}</svg>`;
+
+/* ---------- map view ---------- */
+const hexPts = (x, y, r, flat = false) => Array.from({ length: 6 }, (_, k) => {
+  const a = ((flat ? 0 : -90) + 60 * k) * Math.PI / 180;
+  return `${(x + r * Math.cos(a)).toFixed(1)},${(y + r * Math.sin(a)).toFixed(1)}`;
+}).join(" ");
+function wrapWords(s, max = 14) {
+  const words = String(s).split(/\s+/), lines = [""];
+  for (const w of words) {
+    const cur = lines[lines.length - 1];
+    if (cur && (cur + " " + w).length > max) lines.push(w); else lines[lines.length - 1] = cur ? cur + " " + w : w;
+  }
+  if (lines.length > 2) { lines[1] = lines.slice(1).join(" "); lines.length = 2; if (lines[1].length > max + 3) lines[1] = lines[1].slice(0, max + 1) + "…"; }
+  return lines;
+}
+function mapLabel(lines, x, y, ux, uy, cls) {
+  // place the label to the side of the ray so it never sits on the connecting line
+  const anchor = ux > 0.35 ? "start" : ux < -0.35 ? "end" : "middle";
+  const y0 = uy > 0.35 ? y + 4 : uy < -0.35 ? y - (lines.length - 1) * 15 - 2 : y - ((lines.length - 1) * 15) / 2 + 4;
+  return `<text class="m-label ${cls}" x="${x.toFixed(1)}" y="${y0.toFixed(1)}" text-anchor="${anchor}">${lines.map((l, i) => `<tspan x="${x.toFixed(1)}" dy="${i ? 15 : 0}">${esc(l)}</tspan>`).join("")}</text>`;
+}
+const MAP = { HUB: 52, BR: 32, SK: 27, R1: 130, STEP: 120 };
+function mapGeometry(t) {
+  const maxK = Math.max(1, ...t.branches.map((b) => b.nodes.length));
+  const half = MAP.R1 + maxK * MAP.STEP + 120;
+  return { maxK, half, size: half * 2 };
+}
+function resolveZoom(size) {
+  if (typeof ui.zoom === "number") return ui.zoom;
+  const avail = Math.min(window.innerWidth - 34, 1066);
+  const fit = avail / size;
+  return window.innerWidth < 700 ? Math.max(fit, 0.68) : Math.min(fit, 1);
+}
+
+function mapSvg(t) {
+  const { maxK, half, size } = mapGeometry(t);
+  const c = half, N = t.branches.length;
+  const lines = [], nodes = [], rings = [];
+  for (let k = 0; k <= maxK; k++) rings.push(`<circle class="m-ring" cx="${c}" cy="${c}" r="${MAP.R1 + k * MAP.STEP}"/>`);
+
+  t.branches.forEach((b, bi) => {
+    const ang = (-90 + (bi * 360) / Math.max(N, 1)) * Math.PI / 180;
+    const ux = Math.cos(ang), uy = Math.sin(ang), vx = -uy, vy = ux;
+    const at = (r) => [c + r * ux, c + r * uy];
+    const allDone = b.nodes.length > 0 && b.nodes.every(nodeDone);
+    const bState = allDone ? "done" : "open";
+    const [bx, by] = at(MAP.R1);
+    lines.push(`<line class="m-line ${bState}" x1="${c}" y1="${c}" x2="${bx.toFixed(1)}" y2="${by.toFixed(1)}"/>`);
+    let prev = [bx, by];
+    b.nodes.forEach((n, ni) => {
+      const st = nodeDone(n) ? "done" : nodeOpen(b, ni) ? "open" : "locked";
+      const [x, y] = at(MAP.R1 + (ni + 1) * MAP.STEP);
+      lines.push(`<line class="m-line ${st}" x1="${prev[0].toFixed(1)}" y1="${prev[1].toFixed(1)}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}"/>`);
+      prev = [x, y];
+      const q = n.quests.length, orbit = MAP.SK + 11, dr = q > 10 ? 2.6 : 3.6;
+      const dots = n.quests.map((qq, qi) => {
+        const a = (-90 + (qi * 360) / q) * Math.PI / 180;
+        return `<circle class="m-dot ${qq.done ? "done" : ""}" cx="${(x + orbit * Math.cos(a)).toFixed(1)}" cy="${(y + orbit * Math.sin(a)).toFixed(1)}" r="${dr}"/>`;
+      }).join("");
+      const lx = x + vx * (MAP.SK + 22), ly = y + vy * (MAP.SK + 22);
+      nodes.push(`
+        <g class="m-node ${st}" data-action="sheet-node" data-id="${n.id}" tabindex="0" role="button" aria-label="${esc(n.name)}, ${st}">
+          <circle class="m-hit" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${MAP.SK + 16}"/>
+          ${dots}
+          <polygon class="m-hex" points="${hexPts(x, y, MAP.SK)}"/>
+          <text class="m-rank" x="${x.toFixed(1)}" y="${(y + 5.5).toFixed(1)}" text-anchor="middle">${n.rank}</text>
+          ${mapLabel(wrapWords(n.name), lx, ly, vx, vy, st)}
+        </g>`);
+    });
+    const blx = bx + vx * (MAP.BR + 16), bly = by + vy * (MAP.BR + 16);
+    nodes.push(`
+      <g class="m-node m-branch ${bState}" data-action="sheet-branch" data-id="${b.id}" tabindex="0" role="button" aria-label="${esc(b.name)} branch">
+        <circle class="m-hit" cx="${bx.toFixed(1)}" cy="${by.toFixed(1)}" r="${MAP.BR + 12}"/>
+        <polygon class="m-hex" points="${hexPts(bx, by, MAP.BR)}"/>
+        ${iconSvg(iconFor(b, bi), 26, bx, by)}
+        ${mapLabel(wrapWords(b.name, 16), blx, bly, vx, vy, "branch")}
+      </g>`);
+  });
+
+  const [r] = rankFor(t), all = treeAllDone(t);
+  const hubState = t.capstone.done ? "mastered" : all ? "ready" : "";
+  const hub = `
+    <g class="m-node m-hub ${hubState}" data-action="sheet-hub" tabindex="0" role="button" aria-label="${esc(t.name)} overview">
+      <polygon class="m-hex-outer" points="${hexPts(c, c, MAP.HUB + 9, true)}"/>
+      <polygon class="m-hex" points="${hexPts(c, c, MAP.HUB, true)}"/>
+      <text class="m-hub-rank" x="${c}" y="${c + 8}" text-anchor="middle">${r}</text>
+      <text class="m-hub-sub" x="${c}" y="${c + 28}" text-anchor="middle">RANK</text>
+    </g>`;
+  const empty = N === 0 ? `<text class="m-label" x="${c}" y="${c + MAP.HUB + 40}" text-anchor="middle">Tap Edit to add your first branch</text>` : "";
+
+  return `
+  <svg class="map" viewBox="0 0 ${size} ${size}" width="${Math.round(size * resolveZoom(size))}" height="${Math.round(size * resolveZoom(size))}" data-size="${size}" role="img" aria-label="${esc(t.name)} skill map">
+    <defs>
+      <filter id="glow" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      <filter id="glowSoft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="2.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      <radialGradient id="hubFill" cx="50%" cy="40%" r="70%"><stop offset="0%" stop-color="#2a6f8f"/><stop offset="100%" stop-color="#0d1f3a"/></radialGradient>
+      <linearGradient id="prism" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff6b9a"/><stop offset=".25" stop-color="#f2c14e"/><stop offset=".5" stop-color="#5ee6a8"/><stop offset=".75" stop-color="#4fc3ff"/><stop offset="1" stop-color="#a98bff"/></linearGradient>
+    </defs>
+    ${rings.join("")}
+    ${lines.join("")}
+    ${hub}
+    ${nodes.join("")}
+    ${empty}
+  </svg>`;
+}
+
+function mapView(t) {
+  const s = treeStats(t), [r, rs] = rankFor(t);
+  return `
+  <div class="topbar">
+    <button class="iconbtn" type="button" data-action="home">← Trees</button>
+    <div class="btnrow">${syncPill()}<button class="iconbtn" type="button" data-action="toggle-edit">Edit</button></div>
+  </div>
+  <header class="tree-head">
+    <h1 style="font-size:24px;color:#fff">${esc(t.name)}</h1>
+    <p>${r}-Rank · ${esc(rs)} · ${s.done}/${s.total} quests · ${s.xp} XP</p>
+  </header>
+  <div class="map-bar">
+    <div class="seg" role="group" aria-label="View">
+      <button type="button" class="on" aria-pressed="true">Map</button>
+      <button type="button" data-action="mode-list" aria-pressed="false">List</button>
+    </div>
+    <div class="seg" role="group" aria-label="Zoom">
+      <button type="button" data-action="zoom" data-dir="-1" aria-label="Zoom out">−</button>
+      <button type="button" data-action="zoom-fit">Fit</button>
+      <button type="button" data-action="zoom" data-dir="1" aria-label="Zoom in">+</button>
+    </div>
+  </div>
+  <div class="map-wrap" id="map-wrap"><div class="map-inner">${mapSvg(t)}</div></div>
+  <div class="legend"><span style="--c:var(--locked)">Locked</span><span style="--c:var(--accent)">Unlocked</span><span style="--c:var(--done)">Cleared</span><span style="--c:var(--gold)">Tap a skill to see its quests</span></div>`;
+}
+
+/* ---------- bottom sheet ---------- */
+function sheetHtml(t) {
+  const sh = ui.sheet;
+  let body = "";
+  if (sh.type === "node") {
+    const { branch, node } = find(t, "node", sh.id);
+    if (!node) { ui.sheet = null; return ""; }
+    const i = branch.nodes.indexOf(node), open = nodeOpen(branch, i), dn = nodeDone(node);
+    const cnt = node.quests.filter((q) => q.done).length;
+    body = `
+      <div class="sheet-head">
+        <svg width="46" height="46" viewBox="0 0 46 46" aria-hidden="true"><polygon class="s-hex ${dn ? "done" : open ? "open" : "locked"}" points="${hexPts(23, 23, 20)}"/><text x="23" y="28" text-anchor="middle" class="s-rank ${dn ? "done" : open ? "open" : "locked"}">${node.rank}</text></svg>
+        <div><h2>${esc(node.name)}</h2><p>${esc(branch.name)} · ${node.rank}-Rank · +${RANK_XP[node.rank]} XP per quest</p></div>
+      </div>
+      <div class="chiprow"><span class="state ${dn ? "done" : open ? "open" : "locked"}">${dn ? "Cleared" : open ? `${cnt} of ${node.quests.length} done` : "Locked"}</span></div>
+      ${!open ? `<p class="sheet-note">Clear <b>${esc(branch.nodes[i - 1].name)}</b> to unlock. Here's what's ahead:</p>` : ""}
+      <ul class="quests sheet-quests">${node.quests.length ? node.quests.map((q) => `
+        <li><label for="sq-${q.id}"><input type="checkbox" id="sq-${q.id}" data-quest="${q.id}" ${q.done ? "checked" : ""} ${open ? "" : "disabled"}><span>${esc(q.text)}</span><em class="xp">+${RANK_XP[node.rank]} XP</em></label></li>`).join("")
+        : `<li class="empty">No quests yet. Use Edit to add some.</li>`}</ul>`;
+  } else if (sh.type === "branch") {
+    const { branch } = find(t, "branch", sh.id);
+    if (!branch) { ui.sheet = null; return ""; }
+    const bi = t.branches.indexOf(branch);
+    body = `
+      <div class="sheet-head"><span class="s-icon">${iconHtml(iconFor(branch, bi), 26)}</span><div><h2>${esc(branch.name)}</h2>${branch.desc ? `<p>${esc(branch.desc)}</p>` : ""}</div></div>
+      <div class="sheet-list">${branch.nodes.map((n, ni) => {
+        const st = nodeDone(n) ? "done" : nodeOpen(branch, ni) ? "open" : "locked";
+        return `<button type="button" class="sheet-row" data-action="sheet-node" data-id="${n.id}"><b class="r ${st}">${n.rank}</b><span>${esc(n.name)}</span><span class="state ${st}">${st === "done" ? "Cleared" : st === "open" ? `${n.quests.filter((q) => q.done).length}/${n.quests.length}` : "Locked"}</span></button>`;
+      }).join("") || `<p class="empty">No skills yet. Use Edit to add some.</p>`}</div>`;
+  } else {
+    const s = treeStats(t), [r, rs] = rankFor(t), all = treeAllDone(t);
+    body = `
+      <div class="sheet-head"><svg width="46" height="46" viewBox="0 0 46 46" aria-hidden="true"><polygon class="s-hex open" points="${hexPts(23, 23, 20, true)}"/><text x="23" y="28" text-anchor="middle" class="s-rank open">${r}</text></svg>
+        <div><h2>${esc(t.name)}</h2><p>${r}-Rank · ${esc(rs)}</p></div></div>
+      ${t.desc ? `<p class="sheet-note">${esc(t.desc)}</p>` : ""}
+      <div class="bar"><i style="width:${s.pct * 100}%"></i></div>
+      <div class="meta"><span>${s.done} / ${s.total} quests</span><span>${s.xp} / ${s.max} XP</span></div>
+      <div class="cap-box">
+        <div class="sys-label" style="color:var(--gold)">S-Rank Capstone · +${CAPSTONE_XP} XP</div>
+        ${!t.capstone.text ? `<p class="sheet-note">No capstone yet. Add one in Edit.</p>`
+          : all ? `<label class="cap-label" for="capbox"><input type="checkbox" id="capbox" data-action="capstone" ${t.capstone.done ? "checked" : ""}><span>${esc(t.capstone.text)}</span></label>`
+          : `<p class="sheet-note">Locked. Clear every skill in this tree to reveal the final quest.</p>`}
+      </div>`;
+  }
+  return `<div class="sheet-bg" data-action="sheet-close"><section class="sheet" role="dialog" aria-modal="true"><div class="grab" aria-hidden="true"></div><button type="button" class="sheet-x" data-action="sheet-close" aria-label="Close">✕</button>${body}</section></div>`;
+}
+function renderSheet() {
+  const m = document.getElementById("modal");
+  const t = getTree(ui.treeId);
+  if (!ui.sheet || !t || ui.view !== "tree") { if (m.querySelector(".sheet-bg")) m.innerHTML = ""; ui.sheet = null; return; }
+  const scroller = m.querySelector(".sheet"), st = scroller ? scroller.scrollTop : 0;
+  m.innerHTML = sheetHtml(t);
+  const ns = m.querySelector(".sheet"); if (ns) ns.scrollTop = st;
+}
+
 function treeView(t) {
+  if (!ui.edit && ui.mode !== "list") return mapView(t);
   const s = treeStats(t), [r, rs] = rankFor(t), edit = ui.edit;
   const branches = t.branches.map((b, bi) => {
     const bDone = b.nodes.reduce((a, n) => a + n.quests.filter((q) => q.done).length, 0);
@@ -359,7 +593,7 @@ function treeView(t) {
     }).join("");
     return `
     <section class="branch">
-      <div class="branch-head"><h2>${esc(b.name)}</h2><span class="pct">${bDone}/${bAll}</span></div>
+      <div class="branch-head"><h2><span class="b-icon">${iconHtml(iconFor(b, bi), 18)}</span>${esc(b.name)}</h2><span class="pct">${bDone}/${bAll}</span></div>
       ${b.desc ? `<p class="branch-desc">${esc(b.desc)}</p>` : ""}
       ${edit ? `<div class="tools" style="margin-left:0">
         <button class="tool" type="button" data-action="move-branch" data-id="${b.id}" data-dir="-1" ${bi === 0 ? "disabled" : ""}>↑ Up</button>
@@ -394,8 +628,9 @@ function treeView(t) {
     ${t.desc ? `<p>${esc(t.desc)}</p>` : ""}
   </header>
   ${edit ? `<div class="edit-banner">Edit mode: add, rename, reorder, or delete anything. Skills unlock top to bottom within each branch.</div>
-    <div class="btnrow"><button class="tool" type="button" data-action="edit-tree">Rename tree</button><button class="tool del" type="button" data-action="del-tree">Delete tree</button></div>`
-    : `<div class="legend"><span style="--c:var(--locked)">Locked</span><span style="--c:var(--accent)">Unlocked</span><span style="--c:var(--done)">Cleared</span></div>`}
+    <div class="btnrow"><button class="tool" type="button" data-action="edit-tree">Edit tree</button><button class="tool del" type="button" data-action="del-tree">Delete tree</button></div>`
+    : `<div class="map-bar"><div class="seg" role="group" aria-label="View"><button type="button" data-action="mode-map" aria-pressed="false">Map</button><button type="button" class="on" aria-pressed="true">List</button></div></div>
+       <div class="legend"><span style="--c:var(--locked)">Locked</span><span style="--c:var(--accent)">Unlocked</span><span style="--c:var(--done)">Cleared</span></div>`}
   <div class="${edit ? "edit" : ""}" style="display:flex;flex-direction:column;gap:18px">
     ${branches}
     ${edit ? `<button class="add-row" type="button" data-action="add-branch" style="padding:12px">+ Add branch</button>` : ""}
@@ -446,13 +681,47 @@ function settingsView() {
     <p>Erases all trees, progress, and your streak${session ? " on every synced device" : " on this device"}.</p>
     <div class="btnrow"><button class="btn danger" type="button" data-action="reset">Reset all data</button></div>
   </section>
-  <p class="foot">Skill Tree v1.1</p>`;
+  <p class="foot">Skill Tree v1.2</p>`;
 }
 
 function render() {
   const app = document.getElementById("app");
   if (ui.view === "tree" && !getTree(ui.treeId)) ui.view = "home";
+  const oldWrap = document.getElementById("map-wrap");
+  const keep = oldWrap && !ui.recenter ? { l: oldWrap.scrollLeft, t: oldWrap.scrollTop } : null;
   app.innerHTML = ui.view === "tree" ? treeView(getTree(ui.treeId)) : ui.view === "settings" ? settingsView() : homeView();
+  app.classList.toggle("wide", !!document.getElementById("map-wrap"));
+  const wrap = document.getElementById("map-wrap");
+  if (wrap) {
+    if (keep) { wrap.scrollLeft = keep.l; wrap.scrollTop = keep.t; }
+    else requestAnimationFrame(() => { wrap.scrollLeft = (wrap.scrollWidth - wrap.clientWidth) / 2; wrap.scrollTop = (wrap.scrollHeight - wrap.clientHeight) / 2; });
+    bindPinch(wrap);
+  }
+  ui.recenter = false;
+  renderSheet();
+}
+
+/* pinch to zoom on the map (two fingers), keeping the point between them in place */
+function setZoom(z, wrap, fx, fy) {
+  const svg = wrap.querySelector("svg.map"); if (!svg) return;
+  const size = +svg.dataset.size, old = svg.getBoundingClientRect().width / size;
+  z = Math.max(0.3, Math.min(2.2, z));
+  const cx = (wrap.scrollLeft + fx) / old, cy = (wrap.scrollTop + fy) / old;
+  svg.setAttribute("width", Math.round(size * z)); svg.setAttribute("height", Math.round(size * z));
+  wrap.scrollLeft = cx * z - fx; wrap.scrollTop = cy * z - fy;
+  ui.zoom = z;
+}
+function bindPinch(wrap) {
+  let d0 = 0, z0 = 1;
+  const dist = (e) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+  const mid = (e) => { const r = wrap.getBoundingClientRect(); return [(e.touches[0].clientX + e.touches[1].clientX) / 2 - r.left, (e.touches[0].clientY + e.touches[1].clientY) / 2 - r.top]; };
+  wrap.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 2) { d0 = dist(e); const svg = wrap.querySelector("svg.map"); z0 = svg.getBoundingClientRect().width / +svg.dataset.size; }
+  }, { passive: true });
+  wrap.addEventListener("touchmove", (e) => {
+    if (e.touches.length === 2 && d0) { e.preventDefault(); const [fx, fy] = mid(e); setZoom(z0 * dist(e) / d0, wrap, fx, fy); }
+  }, { passive: false });
+  wrap.addEventListener("touchend", (e) => { if (e.touches.length < 2) d0 = 0; }, { passive: true });
 }
 
 /* ---------- edit helpers ---------- */
@@ -486,8 +755,26 @@ document.addEventListener("click", (e) => {
     case "modal-close": closeModal(); return;
     case "home": ui.view = "home"; ui.edit = false; break;
     case "settings": ui.view = "settings"; break;
-    case "open-tree": ui.view = "tree"; ui.treeId = id; ui.edit = false; window.scrollTo(0, 0); break;
-    case "toggle-edit": ui.edit = !ui.edit; break;
+    case "open-tree": ui.view = "tree"; ui.treeId = id; ui.edit = false; ui.zoom = null; ui.recenter = true; window.scrollTo(0, 0); break;
+    case "toggle-edit": ui.edit = !ui.edit; ui.sheet = null; ui.recenter = true; break;
+    case "mode-list": ui.mode = "list"; ui.sheet = null; break;
+    case "mode-map": ui.mode = "map"; ui.recenter = true; break;
+    case "sheet-node": ui.sheet = { type: "node", id }; renderSheet(); return;
+    case "sheet-branch": ui.sheet = { type: "branch", id }; renderSheet(); return;
+    case "sheet-hub": ui.sheet = { type: "hub" }; renderSheet(); return;
+    case "sheet-close": if (e.target === el || el.classList.contains("sheet-x")) { ui.sheet = null; renderSheet(); } return;
+    case "zoom": {
+      const wrap = document.getElementById("map-wrap"); if (!wrap) return;
+      const svg = wrap.querySelector("svg.map"), cur = svg.getBoundingClientRect().width / +svg.dataset.size;
+      setZoom(cur * (dir > 0 ? 1.25 : 0.8), wrap, wrap.clientWidth / 2, wrap.clientHeight / 2); return;
+    }
+    case "zoom-fit": {
+      const wrap = document.getElementById("map-wrap"); if (!wrap) return;
+      const svg = wrap.querySelector("svg.map");
+      setZoom(Math.min(wrap.clientWidth, wrap.clientHeight) / +svg.dataset.size, wrap, wrap.clientWidth / 2, wrap.clientHeight / 2);
+      requestAnimationFrame(() => { wrap.scrollLeft = (wrap.scrollWidth - wrap.clientWidth) / 2; wrap.scrollTop = (wrap.scrollHeight - wrap.clientHeight) / 2; });
+      return;
+    }
     case "toggle-node": {
       if (ui.edit) return;
       const { branch, node } = find(t, "node", id);
@@ -501,29 +788,29 @@ document.addEventListener("click", (e) => {
 
     case "add-tree":
       openModal({ title: "New skill tree", text: "A subject you want to level up in, like Investing or Data Analysis.",
-        fields: [{ id: "name", label: "Name", required: true, placeholder: "e.g. Investing" }, { id: "desc", label: "Goal (optional)", placeholder: "What does mastery look like?" }],
+        fields: [{ id: "name", label: "Name", required: true, placeholder: "e.g. Investing" }, { id: "desc", label: "Goal (optional)", placeholder: "What does mastery look like?" }, { id: "icon", label: "Icon", type: "select", value: "", options: iconOptions() }],
         confirm: "Create", onSubmit: (v) => {
           if (!v.name) return;
-          const nt = { id: uid(), name: v.name, desc: v.desc, capstone: { text: "", done: false }, branches: [] };
+          const nt = { id: uid(), name: v.name, desc: v.desc, icon: v.icon || "", capstone: { text: "", done: false }, branches: [] };
           state.trees.push(nt); ui.view = "tree"; ui.treeId = nt.id; ui.edit = true;
         } });
       return;
     case "edit-tree":
-      openModal({ title: "Rename tree", fields: [{ id: "name", label: "Name", value: t.name, required: true }, { id: "desc", label: "Goal", value: t.desc }],
-        onSubmit: (v) => { if (v.name) t.name = v.name; t.desc = v.desc; } });
+      openModal({ title: "Edit tree", fields: [{ id: "name", label: "Name", value: t.name, required: true }, { id: "desc", label: "Goal", value: t.desc }, { id: "icon", label: "Icon", type: "select", value: t.icon || "", options: iconOptions() }],
+        onSubmit: (v) => { if (v.name) t.name = v.name; t.desc = v.desc; t.icon = v.icon; } });
       return;
     case "del-tree":
       confirmDel(`"${t.name}" and all its progress`, () => { state.trees = state.trees.filter((x) => x !== t); ui.view = "home"; ui.edit = false; });
       return;
 
     case "add-branch":
-      openModal({ title: "New branch", text: "A major area within this subject.", fields: [{ id: "name", label: "Name", required: true }, { id: "desc", label: "Description (optional)" }],
-        confirm: "Add", onSubmit: (v) => { if (v.name) t.branches.push({ id: uid(), name: v.name, desc: v.desc, nodes: [] }); } });
+      openModal({ title: "New branch", text: "A major area within this subject.", fields: [{ id: "name", label: "Name", required: true }, { id: "desc", label: "Description (optional)" }, { id: "icon", label: "Icon", type: "select", value: "", options: iconOptions() }],
+        confirm: "Add", onSubmit: (v) => { if (v.name) t.branches.push({ id: uid(), name: v.name, desc: v.desc, icon: v.icon || "", nodes: [] }); } });
       return;
     case "edit-branch": {
       const { branch } = find(t, "branch", id);
-      openModal({ title: "Edit branch", fields: [{ id: "name", label: "Name", value: branch.name, required: true }, { id: "desc", label: "Description", value: branch.desc }],
-        onSubmit: (v) => { if (v.name) branch.name = v.name; branch.desc = v.desc; } });
+      openModal({ title: "Edit branch", fields: [{ id: "name", label: "Name", value: branch.name, required: true }, { id: "desc", label: "Description", value: branch.desc }, { id: "icon", label: "Icon", type: "select", value: branch.icon || "", options: iconOptions() }],
+        onSubmit: (v) => { if (v.name) branch.name = v.name; branch.desc = v.desc; branch.icon = v.icon; } });
       return;
     }
     case "del-branch": {
