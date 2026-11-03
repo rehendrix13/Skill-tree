@@ -72,11 +72,12 @@ const DEFAULT_DISC = [
 ];
 const seedDisciplines = () => ({ areas: DEFAULT_DISC.map(([day, name, stat, icon, tasks]) => ({ id: uid(), day, name, stat, icon, tasks: [...tasks] })), log: {}, swaps: {} });
 
-function freshState() { return { version: 1, trees: [seedPO()], days: [], updatedAt: 0, disciplines: seedDisciplines() }; }
+function freshState() { return { version: 1, trees: [seedPO()], days: [], updatedAt: 0, disciplines: seedDisciplines(), sideQuests: [] }; }
 function normalize(s) {
   const out = { version: 1, days: [], updatedAt: 0, ...s, trees: Array.isArray(s.trees) ? s.trees : [] };
   if (!out.disciplines || !Array.isArray(out.disciplines.areas)) out.disciplines = seedDisciplines();
   out.disciplines.log ||= {}; out.disciplines.swaps ||= {};
+  if (!Array.isArray(out.sideQuests)) out.sideQuests = [];
   return out;
 }
 function load() {
@@ -233,7 +234,7 @@ function treeStats(t) {
   if (t.capstone.text) { total++; max += CAPSTONE_XP; if (t.capstone.done) { done++; xp += CAPSTONE_XP; } }
   return { xp, max, done, total, pct: max ? xp / max : 0 };
 }
-const totalXP = () => state.trees.reduce((a, t) => a + treeStats(t).xp, 0) + Object.keys(state.disciplines?.log || {}).length * DISC_XP;
+const totalXP = () => Math.max(0, state.trees.reduce((a, t) => a + treeStats(t).xp, 0) + Object.keys(state.disciplines?.log || {}).length * DISC_XP + sideXPNet());
 const levelFor = (xp) => 1 + Math.floor(xp / XP_PER_LEVEL);
 function rankFor(t) {
   const { pct } = treeStats(t);
@@ -278,7 +279,7 @@ function openModal({ title, text, fields = [], confirm = "Save", danger = false,
             ? `<textarea id="f-${f.id}" name="${f.id}" placeholder="${esc(f.placeholder || "")}">${esc(f.value || "")}</textarea>`
             : f.type === "select"
             ? `<select id="f-${f.id}" name="${f.id}">${f.options.map((o) => `<option value="${esc(o.value)}" ${o.value === f.value ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select>`
-            : `<input id="f-${f.id}" name="${f.id}" type="text" value="${esc(f.value || "")}" placeholder="${esc(f.placeholder || "")}" ${f.required ? "required" : ""}>`}
+            : `<input id="f-${f.id}" name="${f.id}" type="${f.type === "date" || f.type === "time" ? f.type : "text"}" value="${esc(f.value || "")}" placeholder="${esc(f.placeholder || "")}" ${f.required ? "required" : ""}>`}
         </div>`).join("")}
       <div class="btnrow">
         <button type="button" class="btn ghost" data-action="modal-close">Cancel</button>
@@ -331,6 +332,134 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ---------- views ---------- */
+/* ---------- side quests: your own real-life quests ---------- */
+const SIDE_RANKS = ["E", "C", "A", "S"];
+const DAY_MS = 86400000;
+const REPEATS = [["", "Doesn't repeat"], ["daily", "Every day"], ["weekdays", "Every weekday (Mon–Fri)"], ["weekly", "Every week"], ["biweekly", "Every 2 weeks"], ["monthly", "Every month"]];
+const sideBonusXP = (q) => Math.round(RANK_XP[q.rank] * 1.1);
+function sidePenalty(q, now = Date.now()) {
+  // after 24h overdue and still not done: -10 XP per day
+  const end = q.done ? q.completedAt : now, over = end - q.dueAt;
+  return over >= DAY_MS ? Math.floor(over / DAY_MS) * 10 : 0;
+}
+const sideXPNet = () => (state.sideQuests || []).reduce((a, q) => a + (q.done ? q.xp || 0 : 0) - sidePenalty(q), 0);
+const isOverdue = (q, now = Date.now()) => !q.done && q.dueAt < now;
+function nextDue(ms, rep) {
+  const d = new Date(ms);
+  if (rep === "daily") d.setDate(d.getDate() + 1);
+  else if (rep === "weekdays") { do d.setDate(d.getDate() + 1); while (d.getDay() === 0 || d.getDay() === 6); }
+  else if (rep === "weekly") d.setDate(d.getDate() + 7);
+  else if (rep === "biweekly") d.setDate(d.getDate() + 14);
+  else if (rep === "monthly") { const day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + 1); d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate())); }
+  return d.getTime();
+}
+function spawnNext(q) {
+  if (!q.repeat) return null;
+  let due = nextDue(q.dueAt, q.repeat);
+  while (due <= Date.now()) due = nextDue(due, q.repeat);
+  const n = { id: uid(), title: q.title, desc: q.desc, rank: q.rank, repeat: q.repeat, dueAt: due, createdAt: Date.now(), done: false };
+  state.sideQuests.push(n);
+  return n;
+}
+function completeSide(q) {
+  if (q.done) return;
+  const before = levelFor(totalXP());
+  q.done = true; q.completedAt = Date.now();
+  q.xp = q.completedAt <= q.dueAt ? sideBonusXP(q) : 0;
+  const n = spawnNext(q);
+  toast(q.xp ? `Side Quest complete · +${q.xp} XP (early bonus)` : "Side Quest complete · overdue, no XP");
+  if (n) setTimeout(() => toast(`Next one: ${fmtDue(n.dueAt)}`), 1400);
+  const after = levelFor(totalXP());
+  if (after > before) setTimeout(() => toast(`LEVEL UP! You are now Level ${after}`), 2600);
+}
+function uncompleteSide(q) {
+  q.done = false; delete q.completedAt; delete q.xp;
+}
+const timeStr = (ms) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+function fmtDue(ms) {
+  const d = new Date(ms), k = dayKey(d), t = new Date(), tm = new Date(t); tm.setDate(t.getDate() + 1);
+  const day = k === dayKey(t) ? "Today" : k === dayKey(tm) ? "Tomorrow" : d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  return `${day} · ${timeStr(ms)}`;
+}
+function relTime(ms) {
+  const diff = ms - Date.now(), a = Math.abs(diff), h = Math.floor(a / 3600000), m = Math.floor((a % 3600000) / 60000);
+  const str = h >= 48 ? `${Math.floor(h / 24)}d` : h ? `${h}h ${m}m` : `${m}m`;
+  return diff >= 0 ? `in ${str}` : `${str} ago`;
+}
+function sideStatus(q) {
+  if (q.done) return { cls: "done", label: q.xp ? `Done · +${q.xp} XP` : "Done late · 0 XP" };
+  if (isOverdue(q)) { const pen = sidePenalty(q); return { cls: "overdue", label: `Overdue${pen ? ` · −${pen} XP` : ""}` }; }
+  return { cls: "open", label: `+${sideBonusXP(q)} XP if done on time` };
+}
+function sideItem(q) {
+  const st = sideStatus(q);
+  return `
+  <li class="sq ${st.cls}">
+    <label class="sq-check" for="sq-c-${q.id}"><input type="checkbox" id="sq-c-${q.id}" data-side="${q.id}" ${q.done ? "checked" : ""}></label>
+    <button type="button" class="sq-body" data-action="sheet-side" data-id="${q.id}">
+      <span class="sq-top"><b class="sq-rank r-${q.rank}">${q.rank}</b><span class="sq-title">${esc(q.title)}</span>${q.repeat ? `<span class="sq-rep" title="Repeats">↻</span>` : ""}</span>
+      <span class="sq-meta"><span>${q.done ? `Completed ${timeStr(q.completedAt)}` : `${fmtDue(q.dueAt)} · ${relTime(q.dueAt)}`}</span><span class="sq-state">${st.label}</span></span>
+    </button>
+  </li>`;
+}
+function sideFormFields(q = {}, presetDate) {
+  const base = q.dueAt ? new Date(q.dueAt) : (() => { const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 2); return d; })();
+  const dateVal = presetDate || dayKey(base);
+  const timeVal = `${String(base.getHours()).padStart(2, "0")}:${String(base.getMinutes()).padStart(2, "0")}`;
+  return [
+    { id: "title", label: "Quest title", value: q.title || "", required: true, placeholder: "e.g. Renew car registration" },
+    { id: "desc", label: "Description (optional)", type: "textarea", value: q.desc || "", placeholder: "Details, links, steps…" },
+    { id: "date", label: "Due date", type: "date", value: dateVal },
+    { id: "time", label: "Due time", type: "time", value: timeVal },
+    { id: "rank", label: "Difficulty", type: "select", value: q.rank || "C", options: SIDE_RANKS.map((r) => ({ value: r, label: `${r}-Rank · ${RANK_XP[r]} XP (+10% if early: ${Math.round(RANK_XP[r] * 1.1)})` })) },
+    { id: "repeat", label: "Repeat", type: "select", value: q.repeat || "", options: REPEATS.map(([v, l]) => ({ value: v, label: l })) },
+  ];
+}
+const parseDue = (v) => new Date(`${v.date}T${v.time || "09:00"}`).getTime();
+function openSideForm(q, presetDate) {
+  openModal({
+    title: q ? "Edit Side Quest" : "New Side Quest",
+    text: q ? "" : "Alerts at 4 hours, 1 hour, and when it's due. Finish early for +10% XP.",
+    fields: sideFormFields(q || {}, presetDate), confirm: q ? "Save" : "Accept quest",
+    onSubmit: (v) => {
+      if (!v.title || !v.date) return;
+      const due = parseDue(v);
+      if (isNaN(due)) { toast("Pick a valid date and time"); return; }
+      if (q) {
+        const moved = q.dueAt !== due;
+        Object.assign(q, { title: v.title, desc: v.desc, rank: v.rank, repeat: v.repeat || "", dueAt: due });
+        if (moved) { const old = q.id; q.id = uid(); q.createdAt = Date.now(); if (ui.sheet && ui.sheet.id === old) ui.sheet.id = q.id; }
+        toast("Side Quest updated");
+      } else {
+        state.sideQuests.push({ id: uid(), title: v.title, desc: v.desc, rank: v.rank, repeat: v.repeat || "", dueAt: due, createdAt: Date.now(), done: false });
+        toast(`Side Quest accepted · due ${fmtDue(due)}`);
+      }
+    },
+  });
+}
+function sideSheetHtml(q) {
+  const st = sideStatus(q), rep = REPEATS.find(([v]) => v === (q.repeat || ""))[1];
+  return `
+    <div class="sheet-head">
+      <svg width="46" height="46" viewBox="0 0 46 46" aria-hidden="true"><polygon class="s-hex ${q.done ? "done" : isOverdue(q) ? "over" : "open"}" points="${hexPts(23, 23, 20)}"/><text x="23" y="28" text-anchor="middle" class="s-rank ${q.done ? "done" : "open"}">${q.rank}</text></svg>
+      <div><div class="sys-label" style="color:var(--gold)">Side Quest</div><h2>${esc(q.title)}</h2></div>
+    </div>
+    <div class="chiprow"><span class="state ${st.cls === "overdue" ? "over" : st.cls}">${esc(st.label)}</span>${q.repeat ? `<span class="state open">↻ ${esc(rep)}</span>` : ""}</div>
+    <div class="sq-facts">
+      <div><span>Due</span><b>${fmtDue(q.dueAt)}</b><small>${q.done ? "" : relTime(q.dueAt)}</small></div>
+      <div><span>Reward</span><b>${RANK_XP[q.rank]} XP</b><small>${sideBonusXP(q)} if early</small></div>
+    </div>
+    ${q.desc ? `<p class="sq-desc">${esc(q.desc)}</p>` : ""}
+    ${isOverdue(q) ? `<p class="sheet-note" style="color:var(--danger)">Overdue quests earn no XP. After 24 hours overdue, you lose 10 XP per day until it's done.</p>` : ""}
+    <div class="btnrow">
+      ${q.done ? `<button class="btn ghost" type="button" data-action="side-undo" data-id="${q.id}">Mark not done</button>`
+        : `<button class="btn" type="button" data-action="side-done" data-id="${q.id}">Complete quest</button>`}
+      <button class="btn ghost" type="button" data-action="side-edit" data-id="${q.id}">Edit</button>
+      ${q.repeat && !q.done ? `<button class="btn ghost" type="button" data-action="side-skip" data-id="${q.id}">Skip this one</button>` : ""}
+      <button class="btn danger" type="button" data-action="side-del" data-id="${q.id}">Delete</button>
+    </div>`;
+}
+
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const areaForDay = (dow) => state.disciplines.areas.find((a) => a.day === dow);
 const weekIdx = (d) => Math.floor((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000 + 3) / 7);
@@ -575,6 +704,68 @@ function homeView() {
   ${statusWindow()}
   ${todayCard()}
   ${disciplinesSection()}
+  ${journalSection()}
+  <p class="foot">${session ? "Progress syncs across your signed-in devices." : "Progress saves on this device. Sign in from Settings to sync."}</p>`;
+}
+function journalSection() {
+  const recent = journalEntries().slice(0, 3);
+  return `
+  <section class="card j-home">
+    <div class="ds-head"><div><div class="sys-label">Journal</div><h2 style="font-size:19px;color:#fff;margin-top:2px">Recent entries</h2></div><button type="button" class="iconbtn" data-action="journal">Open →</button></div>
+    ${recent.length ? `<ul class="j-list">${recent.map((e) => entryHtml(e, { label: e.label, areaId: e.areaId, noDelete: true })).join("")}</ul>`
+      : `<p>Reflections, discipline notes, and quest notes collect here. Tap any stat above to write one.</p>`}
+  </section>`;
+}
+function calendarView() {
+  const now = new Date();
+  const ym = ui.calMonth || `${now.getFullYear()}-${now.getMonth()}`;
+  const [Y, M] = ym.split("-").map(Number);
+  const first = new Date(Y, M, 1), startPad = first.getDay(), days = new Date(Y, M + 1, 0).getDate();
+  const sel = ui.calDay || today();
+  const qs = state.sideQuests || [];
+  const byDay = {};
+  qs.forEach((q) => { const k = dayKey(new Date(q.dueAt)); (byDay[k] ||= []).push(q); });
+  const questDone = {};
+  state.trees.forEach((t) => t.branches.forEach((b) => b.nodes.forEach((n) => n.quests.forEach((q) => { if (q.done && q.completedAt) { const k = dayKey(new Date(q.completedAt)); (questDone[k] ||= []).push({ q, n, t }); } }))));
+  const cells = [];
+  for (let i = 0; i < startPad; i++) cells.push(`<span class="cal-cell pad"></span>`);
+  for (let d = 1; d <= days; d++) {
+    const k = dayKey(new Date(Y, M, d)), list = byDay[k] || [];
+    const disc = !!state.disciplines.log[k], focus = state.days.includes(k), qd = (questDone[k] || []).length;
+    const over = list.some((q) => isOverdue(q)), open = list.some((q) => !q.done && !isOverdue(q)), dn = list.some((q) => q.done);
+    cells.push(`<button type="button" class="cal-cell ${k === today() ? "today" : ""} ${k === sel ? "sel" : ""}" data-action="cal-day" data-id="${k}">
+      <span class="cal-n">${d}</span>
+      <span class="cal-dots">${over ? `<i class="d-over"></i>` : ""}${open ? `<i class="d-open"></i>` : ""}${dn ? `<i class="d-done"></i>` : ""}${disc ? `<i class="d-disc"></i>` : ""}${focus || qd ? `<i class="d-act"></i>` : ""}</span>
+    </button>`);
+  }
+  const selDate = new Date(`${sel}T12:00:00`);
+  const selList = (byDay[sel] || []).sort((a, b) => a.dueAt - b.dueAt);
+  const discE = state.disciplines.log[sel], discA = discE && state.disciplines.areas.find((a) => a.id === discE.areaId);
+  const qdList = questDone[sel] || [];
+  const monthName = first.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  return `
+  <div class="topbar"><h1>Calendar</h1><div class="btnrow">${syncPill()}</div></div>
+  <section class="cal">
+    <div class="cal-head">
+      <button type="button" class="iconbtn" data-action="cal-prev" aria-label="Previous month">‹</button>
+      <button type="button" class="cal-title" data-action="cal-today">${esc(monthName)}</button>
+      <button type="button" class="iconbtn" data-action="cal-next" aria-label="Next month">›</button>
+    </div>
+    <div class="cal-grid cal-dow">${["S", "M", "T", "W", "T", "F", "S"].map((x) => `<span>${x}</span>`).join("")}</div>
+    <div class="cal-grid">${cells.join("")}</div>
+    <div class="cal-legend"><span><i class="d-open"></i>Due</span><span><i class="d-over"></i>Overdue</span><span><i class="d-done"></i>Done</span><span><i class="d-disc"></i>Discipline</span><span><i class="d-act"></i>Other activity</span></div>
+  </section>
+  <section class="t-section">
+    <h2 class="t-h"><span>${esc(selDate.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }))}</span><button type="button" class="tool" data-action="new-side-on" data-id="${sel}">+ Quest this day</button></h2>
+    ${selList.length ? `<ul class="sq-list">${selList.map(sideItem).join("")}</ul>` : `<p class="t-empty">No side quests due this day.</p>`}
+    ${discE ? `<div class="cal-act"><b style="color:var(--done)">${esc(discA ? discA.stat : discE.stat)}</b> ${esc(discE.text)}${discE.note ? `<p>${esc(discE.note)}</p>` : ""}</div>` : ""}
+    ${state.days.includes(sel) ? `<div class="cal-act"><b style="color:var(--accent)">FOCUS</b> 45-minute focus block logged</div>` : ""}
+    ${qdList.map(({ q, n, t }) => `<div class="cal-act"><b style="color:var(--gold)">${esc(n.rank)}</b> ${esc(q.text)} <small>· ${esc(t.name)}</small></div>`).join("")}
+  </section>`;
+}
+function treesView() {
+  return `
+  <div class="topbar"><h1>Skill Trees</h1><div class="btnrow">${syncPill()}</div></div>
   <div class="trees">
     ${state.trees.map((t, ti) => {
       const s = treeStats(t), [r] = rankFor(t);
@@ -590,8 +781,7 @@ function homeView() {
       </button>`;
     }).join("")}
     <button class="tree-card add-card" type="button" data-action="add-tree">+ New skill tree</button>
-  </div>
-  <p class="foot">${session ? "Progress syncs across your signed-in devices." : "Progress saves on this device. Sign in from Settings to sync."}</p>`;
+  </div>`;
 }
 
 /* ---------- icons (original line set, 24x24) ---------- */
@@ -621,6 +811,11 @@ const ICONS = {
   sprout: ['Sprout', '<path d="M7 20h10M12 20V10M12 10C12 6 9 4 5 4c0 4 3 6 7 6zM12 13c0-3 2.5-5 6-5 0 3.5-2.5 5-6 5z"/>'],
   clock: ['Clock', '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>'],
   briefcase: ['Briefcase', '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>'],
+  home: ['Home', '<path d="M3 11l9-8 9 8M5 10v10h14V10M10 20v-6h4v6"/>'],
+  sun: ['Sun', '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'],
+  calendar: ['Calendar', '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>'],
+  tree: ['Tree', '<circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M12 7.5v5M12 12.5L6.5 17M12 12.5l5.5 4.5"/>'],
+  plus: ['Plus', '<path d="M12 5v14M5 12h14"/>'],
   cap: ['Graduation', '<path d="M22 10L12 5 2 10l10 5 10-5zM6 12v5c3 2 9 2 12 0v-5"/>'],
 };
 const ICON_KEYWORDS = [
@@ -744,7 +939,7 @@ function mapView(t) {
   const s = treeStats(t), [r, rs] = rankFor(t);
   return `
   <div class="topbar">
-    <button class="iconbtn" type="button" data-action="home">← Trees</button>
+    <button class="iconbtn" type="button" data-action="trees">← Trees</button>
     <div class="btnrow">${syncPill()}<button class="iconbtn" type="button" data-action="toggle-edit">Edit</button></div>
   </div>
   <header class="tree-head">
@@ -834,12 +1029,14 @@ function todayView() {
   const groups = state.trees.map((tree) => ({ tree, items: avail.filter((i) => i.tree === tree && !i.quest.pinned) })).filter((g) => g.items.length);
   const dateStr = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
   return `
-  <div class="topbar"><button class="iconbtn" type="button" data-action="home">← Home</button><div class="btnrow">${syncPill()}</div></div>
+  <div class="topbar"><h1>Today</h1><div class="btnrow">${syncPill()}<button class="iconbtn" type="button" data-action="new-side">+ Side Quest</button></div></div>
   <header class="tree-head">
     <div class="sys-label">Quest Board</div>
     <h1 style="font-size:24px;color:#fff;margin-top:4px">${esc(dateStr)}</h1>
     <p>${avail.length} quest${avail.length === 1 ? "" : "s"} available · ${cleared.length} cleared today · +${xpToday} XP today</p>
   </header>
+
+  ${prioritySection()}
 
   ${disciplineCard()}
 
@@ -870,6 +1067,25 @@ function todayView() {
     <ul class="t-list">${cleared.map((i) => todayItem(i, { showTree: multi })).join("")}</ul>
   </section>` : ""}`;
 }
+function sideBuckets() {
+  const tk = today(), now = Date.now();
+  const qs = state.sideQuests || [];
+  const priority = qs.filter((q) => !q.done && (dayKey(new Date(q.dueAt)) === tk || q.dueAt < now)).sort((a, b) => a.dueAt - b.dueAt);
+  const doneToday = qs.filter((q) => q.done && dayKey(new Date(q.completedAt)) === tk).sort((a, b) => b.completedAt - a.completedAt);
+  const upcoming = qs.filter((q) => !q.done && q.dueAt > now && dayKey(new Date(q.dueAt)) !== tk).sort((a, b) => a.dueAt - b.dueAt);
+  return { priority, doneToday, upcoming };
+}
+function prioritySection() {
+  const { priority, doneToday, upcoming } = sideBuckets();
+  const overdue = priority.filter((q) => isOverdue(q)).length;
+  return `
+  <section class="t-section priority">
+    <h2 class="t-h"><span style="color:var(--danger)">⚠ Priority</span><small>${priority.length ? `${priority.length} due${overdue ? ` · ${overdue} overdue` : ""}` : ""}</small></h2>
+    ${priority.length || doneToday.length ? `<ul class="sq-list">${priority.map(sideItem).join("")}${doneToday.map(sideItem).join("")}</ul>`
+      : `<p class="t-empty">No side quests due today. Tap <b>+</b> below to add one.</p>`}
+    ${upcoming.length ? `<details class="upcoming"><summary>Coming up · ${upcoming.length}</summary><ul class="sq-list">${upcoming.slice(0, 8).map(sideItem).join("")}</ul></details>` : ""}
+  </section>`;
+}
 function todayCard() {
   const { avail, cleared, pinned } = todayData();
   const preview = (pinned.length ? pinned : avail).slice(0, 3);
@@ -878,6 +1094,7 @@ function todayCard() {
   <button class="today-card" type="button" data-action="today">
     <span class="row"><span class="sys-label">Today's Quest Board</span><span class="go">Open →</span></span>
     ${dsc ? `<span class="today-disc ${dsc.entry ? "done" : ""}"><b>${esc(dsc.area.stat)}</b> ${esc(dsc.area.name)}: ${esc(dsc.entry ? dsc.entry.text : dsc.text)}${dsc.entry ? " ✓" : ""}</span>` : ""}
+    ${(() => { const { priority } = sideBuckets(); return priority.length ? `<span class="today-pri"><b>${priority.length}</b> side quest${priority.length === 1 ? "" : "s"} due${priority.some((q) => isOverdue(q)) ? ` · <em>${priority.filter((q) => isOverdue(q)).length} overdue</em>` : ""}: ${esc(priority[0].title)}</span>` : ""; })()}
     <span class="today-stats"><b>${avail.length}</b> available<span class="dot">·</span><b>${pinned.length}</b> pinned<span class="dot">·</span><b>${cleared.length}</b> cleared today</span>
     ${preview.length ? `<span class="today-prev">${preview.map((i) => `<span>${i.quest.pinned ? "★" : "▸"} ${esc(i.quest.text)}</span>`).join("")}</span>` : ""}
   </button>`;
@@ -932,6 +1149,14 @@ function sheetHtml(t) {
 function renderSheet() {
   const m = document.getElementById("modal");
   const t = getTree(ui.treeId);
+  if (ui.sheet && ui.sheet.type === "side") {
+    const q = state.sideQuests.find((x) => x.id === ui.sheet.id);
+    if (!q) { ui.sheet = null; m.innerHTML = ""; return; }
+    const sc = m.querySelector(".sheet"), sct = sc ? sc.scrollTop : 0;
+    m.innerHTML = `<div class="sheet-bg" data-action="sheet-close"><section class="sheet" role="dialog" aria-modal="true"><div class="grab" aria-hidden="true"></div><button type="button" class="sheet-x" data-action="sheet-close" aria-label="Close">✕</button>${sideSheetHtml(q)}</section></div>`;
+    const ns2 = m.querySelector(".sheet"); if (ns2) ns2.scrollTop = sct;
+    return;
+  }
   if (!ui.sheet || !t || ui.view !== "tree") { if (m.querySelector(".sheet-bg")) m.innerHTML = ""; ui.sheet = null; return; }
   const scroller = m.querySelector(".sheet"), st = scroller ? scroller.scrollTop : 0;
   m.innerHTML = sheetHtml(t);
@@ -1003,7 +1228,7 @@ function treeView(t) {
 
   return `
   <div class="topbar">
-    <button class="iconbtn" type="button" data-action="home">← Trees</button>
+    <button class="iconbtn" type="button" data-action="trees">← Trees</button>
     <div class="btnrow">${syncPill()}<button class="iconbtn ${edit ? "on" : ""}" type="button" data-action="toggle-edit">${edit ? "Done editing" : "Edit"}</button></div>
   </div>
   <header class="tree-head">
@@ -1024,7 +1249,7 @@ function treeView(t) {
 
 function settingsView() {
   return `
-  <div class="topbar"><button class="iconbtn" type="button" data-action="home">← Trees</button><h1>Settings</h1></div>
+  <div class="topbar"><button class="iconbtn" type="button" data-action="home">← Home</button><h1>Settings</h1></div>
   <section class="card">
     <h2>Sync across devices</h2>
     ${!syncConfigured()
@@ -1071,7 +1296,7 @@ function settingsView() {
     <p>Erases all trees, progress, and your streak${session ? " on every synced device" : " on this device"}.</p>
     <div class="btnrow"><button class="btn danger" type="button" data-action="reset">Reset all data</button></div>
   </section>
-  <p class="foot">Skill Tree v1.7</p>`;
+  <p class="foot">Skill Tree v1.8</p>`;
 }
 
 function render() {
@@ -1079,7 +1304,7 @@ function render() {
   if (ui.view === "tree" && !getTree(ui.treeId)) ui.view = "home";
   const oldWrap = document.getElementById("map-wrap");
   const keep = oldWrap && !ui.recenter ? { l: oldWrap.scrollLeft, t: oldWrap.scrollTop } : null;
-  app.innerHTML = ui.view === "tree" ? treeView(getTree(ui.treeId)) : ui.view === "settings" ? settingsView() : ui.view === "today" ? todayView() : ui.view === "area" && state.disciplines.areas.find((a) => a.id === ui.areaId) ? areaView(state.disciplines.areas.find((a) => a.id === ui.areaId)) : ui.view === "journal" ? journalView() : homeView();
+  app.innerHTML = ui.view === "tree" ? treeView(getTree(ui.treeId)) : ui.view === "settings" ? settingsView() : ui.view === "today" ? todayView() : ui.view === "area" && state.disciplines.areas.find((a) => a.id === ui.areaId) ? areaView(state.disciplines.areas.find((a) => a.id === ui.areaId)) : ui.view === "journal" ? journalView() : ui.view === "calendar" ? calendarView() : ui.view === "trees" ? treesView() : homeView();
   app.classList.toggle("wide", !!document.getElementById("map-wrap"));
   const wrap = document.getElementById("map-wrap");
   if (wrap) {
@@ -1088,7 +1313,18 @@ function render() {
     bindPinch(wrap);
   }
   ui.recenter = false;
+  renderTabbar();
   renderSheet();
+}
+const TAB_OF = { home: "home", area: "home", journal: "home", settings: "home", today: "today", calendar: "calendar", trees: "trees", tree: "trees" };
+function renderTabbar() {
+  const bar = document.getElementById("tabbar"); if (!bar) return;
+  const cur = TAB_OF[ui.view] || "home";
+  const pri = sideBuckets().priority.length;
+  const tab = (key, label, icon, badge) => `<button type="button" class="tab ${cur === key ? "on" : ""}" data-action="tab" data-id="${key}" aria-current="${cur === key ? "page" : "false"}">${iconHtml(icon, 22)}${badge ? `<span class="badge">${badge}</span>` : ""}<span>${label}</span></button>`;
+  bar.innerHTML = `${tab("home", "Home", "home")}${tab("today", "Today", "sun", pri)}
+    <button type="button" class="tab-add" data-action="new-side" aria-label="New side quest"><span>${iconHtml("plus", 26)}</span></button>
+    ${tab("calendar", "Calendar", "calendar")}${tab("trees", "Trees", "tree")}`;
 }
 
 /* pinch to zoom on the map (two fingers), keeping the point between them in place */
@@ -1155,6 +1391,30 @@ document.addEventListener("click", (e) => {
       if (after > before) setTimeout(() => toast(`LEVEL UP! You are now Level ${after}`), 1000);
       break;
     }
+    case "tab": ui.view = id; ui.sheet = null; ui.edit = false; if (id === "calendar") { ui.calDay = ui.calDay || today(); } window.scrollTo(0, 0); break;
+    case "trees": ui.view = "trees"; ui.edit = false; break;
+    case "new-side": openSideForm(null); return;
+    case "new-side-on": openSideForm(null, id); return;
+    case "sheet-side": ui.sheet = { type: "side", id }; renderSheet(); return;
+    case "side-done": { const q = state.sideQuests.find((x) => x.id === id); if (q) completeSide(q); break; }
+    case "side-undo": { const q = state.sideQuests.find((x) => x.id === id); if (q) uncompleteSide(q); break; }
+    case "side-edit": { const q = state.sideQuests.find((x) => x.id === id); if (q) openSideForm(q); return; }
+    case "side-skip": {
+      const q = state.sideQuests.find((x) => x.id === id); if (!q) return;
+      const n = spawnNext(q); state.sideQuests = state.sideQuests.filter((x) => x !== q);
+      ui.sheet = n ? { type: "side", id: n.id } : null; toast(n ? `Skipped · next ${fmtDue(n.dueAt)}` : "Skipped"); break;
+    }
+    case "side-del": {
+      const q = state.sideQuests.find((x) => x.id === id); if (!q) return;
+      confirmDel(`"${q.title}"${q.repeat ? " (and stop repeating)" : ""}`, () => { state.sideQuests = state.sideQuests.filter((x) => x !== q); });
+      return;
+    }
+    case "cal-day": ui.calDay = id; break;
+    case "cal-prev": case "cal-next": {
+      const now = new Date(); const [Y, M] = (ui.calMonth || `${now.getFullYear()}-${now.getMonth()}`).split("-").map(Number);
+      const d = new Date(Y, M + (a === "cal-next" ? 1 : -1), 1); ui.calMonth = `${d.getFullYear()}-${d.getMonth()}`; break;
+    }
+    case "cal-today": { const now = new Date(); ui.calMonth = `${now.getFullYear()}-${now.getMonth()}`; ui.calDay = today(); break; }
     case "open-area": ui.areaBack = ui.view === "today" ? "today" : ui.view === "journal" ? "journal" : "home"; ui.view = "area"; ui.areaId = id; ui.pendingDel = null; window.scrollTo(0, 0); break;
     case "journal": ui.view = "journal"; window.scrollTo(0, 0); break;
     case "jfilter": ui.jFilter = id; break;
@@ -1347,6 +1607,11 @@ document.addEventListener("change", (e) => {
     el.files[0].text().then(importData); return;
   }
   if (el.dataset.quest) return onQuestToggle(el.dataset.quest, el.checked);
+  if (el.dataset.side) {
+    const q = state.sideQuests.find((x) => x.id === el.dataset.side);
+    if (q) { el.checked ? completeSide(q) : uncompleteSide(q); save(); render(); }
+    return;
+  }
   const t = getTree(ui.treeId);
   if (!t) return;
   if (el.dataset.action === "capstone") {
@@ -1477,3 +1742,9 @@ if ("serviceWorker" in navigator && location.protocol === "https:") {
 
 render();
 initSync();
+setInterval(() => {
+  const ae = document.activeElement;
+  if (ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT" || ae.tagName === "SELECT")) return;
+  if (document.querySelector("#modal .modal")) return;
+  if (["today", "calendar", "home"].includes(ui.view)) render();
+}, 60000);

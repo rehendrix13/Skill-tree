@@ -24,3 +24,14 @@ select cron.schedule('skilltree-notify', '*/15 * * * *', $$
     body := '{}'::jsonb
   );
 $$);
+
+-- Part C (side quests): remembers which alerts were sent, and checks every 5 minutes
+create table public.side_alerts (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  quest_id text not null,
+  kind text not null,
+  sent_at timestamptz not null default now(),
+  primary key (user_id, quest_id, kind)
+);
+alter table public.side_alerts enable row level security;
+-- (re-run the cron.schedule from Part B with '*/5 * * * *' instead of '*/15 * * * *')
