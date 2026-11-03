@@ -199,6 +199,10 @@ function find(tree, kind, id) {
   }
   return {};
 }
+function findQuest(qid) {
+  for (const tree of state.trees) { const r = find(tree, "quest", qid); if (r.quest) return { tree, ...r }; }
+  return {};
+}
 const nodeDone = (n) => n.quests.length > 0 && n.quests.every((q) => q.done);
 const nodeOpen = (b, i) => i === 0 || nodeDone(b.nodes[i - 1]);
 const treeAllDone = (t) => t.branches.some((b) => b.nodes.length) && t.branches.every((b) => b.nodes.every(nodeDone));
@@ -275,8 +279,8 @@ document.addEventListener("submit", (e) => {
   if (qid) {
     e.preventDefault();
     const text = (e.target.elements.note.value || "").trim();
-    const t = getTree(ui.treeId); if (!text || !t) return;
-    const { quest } = find(t, "quest", qid); if (!quest) return;
+    if (!text) return;
+    const { quest } = findQuest(qid); if (!quest) return;
     (quest.notes ||= []).push({ id: uid(), text, at: Date.now() });
     save(); render(); toast("Note saved");
     const ta = document.getElementById(`nt-${qid}`); if (ta) ta.focus();
@@ -319,6 +323,7 @@ function homeView() {
   return `
   <div class="topbar"><h1>Skill Tree</h1><div class="btnrow">${syncPill()}<button class="iconbtn" data-action="settings" type="button">Settings</button></div></div>
   ${statusWindow()}
+  ${todayCard()}
   <div class="trees">
     ${state.trees.map((t, ti) => {
       const s = treeStats(t), [r] = rankFor(t);
@@ -538,6 +543,91 @@ function notesBlock(q) {
     </div>` : ""}`;
 }
 
+/* ---------- today board ---------- */
+const isToday = (ms) => ms && dayKey(new Date(ms)) === today();
+function todayData() {
+  const avail = [], cleared = [];
+  state.trees.forEach((tree, ti) => tree.branches.forEach((branch, bi) => branch.nodes.forEach((node, ni) => {
+    const open = nodeOpen(branch, ni);
+    node.quests.forEach((quest) => {
+      const item = { tree, ti, branch, bi, node, quest };
+      if (quest.done) { if (isToday(quest.completedAt)) cleared.push(item); }
+      else if (open) avail.push(item);
+    });
+  })));
+  cleared.sort((a, b) => b.quest.completedAt - a.quest.completedAt);
+  return { avail, cleared, pinned: avail.filter((i) => i.quest.pinned) };
+}
+function todayItem(i, opts = {}) {
+  const { tree, ti, branch, bi, node, quest } = i;
+  return `
+  <li class="t-item ${quest.done ? "is-done" : ""}">
+    <div class="t-row">
+      <label for="tq-${quest.id}" class="t-check"><input type="checkbox" id="tq-${quest.id}" data-quest="${quest.id}" ${quest.done ? "checked" : ""}><span>${esc(quest.text)}</span></label>
+      ${quest.done ? "" : `<button type="button" class="pin ${quest.pinned ? "on" : ""}" data-action="pin" data-id="${quest.id}" aria-pressed="${!!quest.pinned}" aria-label="${quest.pinned ? "Unpin from focus" : "Pin to focus"}">${quest.pinned ? "★" : "☆"}</button>`}
+    </div>
+    <div class="t-meta">
+      <span class="t-ico">${iconHtml(iconFor(branch, bi), 13)}</span>
+      ${opts.showTree ? `<span>${esc(tree.name)}</span><span class="dot">·</span>` : ""}
+      <span>${esc(node.name)}</span><span class="dot">·</span><span class="t-rank">${node.rank}</span>
+      <em class="xp">+${RANK_XP[node.rank]} XP</em>
+    </div>
+    ${notesBlock(quest)}
+  </li>`;
+}
+function todayView() {
+  const { avail, cleared, pinned } = todayData();
+  const xpToday = cleared.reduce((a, i) => a + RANK_XP[i.node.rank], 0);
+  const logged = state.days.includes(today());
+  const multi = state.trees.length > 1;
+  const groups = state.trees.map((tree) => ({ tree, items: avail.filter((i) => i.tree === tree && !i.quest.pinned) })).filter((g) => g.items.length);
+  const dateStr = new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+  return `
+  <div class="topbar"><button class="iconbtn" type="button" data-action="home">← Home</button><div class="btnrow">${syncPill()}</div></div>
+  <header class="tree-head">
+    <div class="sys-label">Quest Board</div>
+    <h1 style="font-size:24px;color:#fff;margin-top:4px">${esc(dateStr)}</h1>
+    <p>${avail.length} quest${avail.length === 1 ? "" : "s"} available · ${cleared.length} cleared today · +${xpToday} XP today</p>
+  </header>
+
+  <section class="window t-daily">
+    <div class="daily" style="margin:0;padding:0;border:none">
+      <p><b style="color:var(--accent)">Daily quest:</b> one 45-minute focus block.<br>Streak: <b>${streak()}</b> day${streak() === 1 ? "" : "s"}</p>
+      <button class="btn" type="button" data-action="daily" ${logged ? "disabled" : ""}>${logged ? "Logged" : "Log it"}</button>
+    </div>
+  </section>
+
+  <section class="t-section">
+    <h2 class="t-h"><span>★ Focus</span><small>${pinned.length ? `${pinned.length} pinned` : ""}</small></h2>
+    ${pinned.length ? `<ul class="t-list">${pinned.map((i) => todayItem(i, { showTree: multi })).join("")}</ul>`
+      : `<p class="t-empty">Tap ☆ on a quest to pin it here, and keep this list short: 1 to 3 quests you'll actually do today.</p>`}
+  </section>
+
+  ${groups.map((g) => `
+  <section class="t-section">
+    <h2 class="t-h"><button type="button" class="t-tree" data-action="open-tree" data-id="${g.tree.id}"><span class="t-ico big">${iconHtml(iconFor(g.tree, state.trees.indexOf(g.tree)), 16)}</span>${esc(g.tree.name)}</button><small>${g.items.length} available</small></h2>
+    <ul class="t-list">${g.items.map((i) => todayItem(i)).join("")}</ul>
+  </section>`).join("")}
+
+  ${!avail.length ? `<p class="t-empty">No open quests right now. Add skills or quests in a tree's Edit mode, or start a new skill tree.</p>` : ""}
+
+  ${cleared.length ? `
+  <section class="t-section">
+    <h2 class="t-h"><span style="color:var(--done)">Cleared today</span><small>+${xpToday} XP</small></h2>
+    <ul class="t-list">${cleared.map((i) => todayItem(i, { showTree: multi })).join("")}</ul>
+  </section>` : ""}`;
+}
+function todayCard() {
+  const { avail, cleared, pinned } = todayData();
+  const preview = (pinned.length ? pinned : avail).slice(0, 3);
+  return `
+  <button class="today-card" type="button" data-action="today">
+    <span class="row"><span class="sys-label">Today's Quest Board</span><span class="go">Open →</span></span>
+    <span class="today-stats"><b>${avail.length}</b> available<span class="dot">·</span><b>${pinned.length}</b> pinned<span class="dot">·</span><b>${cleared.length}</b> cleared today</span>
+    ${preview.length ? `<span class="today-prev">${preview.map((i) => `<span>${i.quest.pinned ? "★" : "▸"} ${esc(i.quest.text)}</span>`).join("")}</span>` : ""}
+  </button>`;
+}
+
 /* ---------- bottom sheet ---------- */
 function sheetHtml(t) {
   const sh = ui.sheet;
@@ -720,7 +810,7 @@ function settingsView() {
     <p>Erases all trees, progress, and your streak${session ? " on every synced device" : " on this device"}.</p>
     <div class="btnrow"><button class="btn danger" type="button" data-action="reset">Reset all data</button></div>
   </section>
-  <p class="foot">Skill Tree v1.3</p>`;
+  <p class="foot">Skill Tree v1.4</p>`;
 }
 
 function render() {
@@ -728,7 +818,7 @@ function render() {
   if (ui.view === "tree" && !getTree(ui.treeId)) ui.view = "home";
   const oldWrap = document.getElementById("map-wrap");
   const keep = oldWrap && !ui.recenter ? { l: oldWrap.scrollLeft, t: oldWrap.scrollTop } : null;
-  app.innerHTML = ui.view === "tree" ? treeView(getTree(ui.treeId)) : ui.view === "settings" ? settingsView() : homeView();
+  app.innerHTML = ui.view === "tree" ? treeView(getTree(ui.treeId)) : ui.view === "settings" ? settingsView() : ui.view === "today" ? todayView() : homeView();
   app.classList.toggle("wide", !!document.getElementById("map-wrap"));
   const wrap = document.getElementById("map-wrap");
   if (wrap) {
@@ -794,6 +884,8 @@ document.addEventListener("click", (e) => {
     case "modal-close": closeModal(); return;
     case "home": ui.view = "home"; ui.edit = false; break;
     case "settings": ui.view = "settings"; break;
+    case "today": ui.view = "today"; ui.sheet = null; window.scrollTo(0, 0); break;
+    case "pin": { const { quest } = findQuest(id); if (quest) { quest.pinned = !quest.pinned; if (quest.pinned) toast("Pinned to Focus"); } break; }
     case "open-tree": ui.view = "tree"; ui.treeId = id; ui.edit = false; ui.zoom = null; ui.recenter = true; window.scrollTo(0, 0); break;
     case "toggle-edit": ui.edit = !ui.edit; ui.sheet = null; ui.recenter = true; break;
     case "mode-list": ui.mode = "list"; ui.sheet = null; break;
@@ -801,7 +893,7 @@ document.addEventListener("click", (e) => {
     case "del-note": {
       const nid = el.dataset.note;
       if (ui.pendingDel !== nid) { ui.pendingDel = nid; render(); setTimeout(() => { if (ui.pendingDel === nid) { ui.pendingDel = null; render(); } }, 3000); return; }
-      const { quest } = find(t, "quest", id);
+      const { quest } = findQuest(id);
       if (quest) quest.notes = (quest.notes || []).filter((n) => n.id !== nid);
       ui.pendingDel = null; break;
     }
@@ -954,6 +1046,7 @@ document.addEventListener("change", (e) => {
   if (el.id === "import-file" && el.files[0]) {
     el.files[0].text().then(importData); return;
   }
+  if (el.dataset.quest) return onQuestToggle(el.dataset.quest, el.checked);
   const t = getTree(ui.treeId);
   if (!t) return;
   if (el.dataset.action === "capstone") {
@@ -961,11 +1054,15 @@ document.addEventListener("change", (e) => {
     if (el.checked) toast(`S-RANK ACHIEVED: ${t.name}`);
     render(); return;
   }
-  if (!el.dataset.quest) return;
+});
+
+function onQuestToggle(qid, checked) {
+  const { branch, node, quest } = findQuest(qid);
+  if (!quest) return;
   const before = levelFor(totalXP());
-  const { branch, node, quest } = find(t, "quest", el.dataset.quest);
-  quest.done = el.checked;
-  if (el.checked && nodeDone(node)) {
+  quest.done = checked;
+  if (checked) quest.completedAt = Date.now(); else delete quest.completedAt;
+  if (checked && nodeDone(node)) {
     ui.expanded[node.id] = false;
     const next = branch.nodes[branch.nodes.indexOf(node) + 1];
     if (next) { ui.expanded[next.id] = true; toast(`Skill cleared: ${node.name}. ${next.name} unlocked`); }
@@ -975,7 +1072,7 @@ document.addEventListener("change", (e) => {
   const after = levelFor(totalXP());
   if (after > before) setTimeout(() => toast(`LEVEL UP! You are now Level ${after}`), 900);
   render();
-});
+}
 
 /* ---------- offline support ---------- */
 if ("serviceWorker" in navigator && location.protocol === "https:") {

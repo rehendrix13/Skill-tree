@@ -266,3 +266,38 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .note-form textarea{background:#0a1122;border:1px solid var(--line);border-radius:4px;padding:8px;font-size:16px;resize:vertical;color:var(--text)}
 .note-form .btn{align-self:flex-end;padding:6px 12px;font-size:13px}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* ---------- v1.4: today board ---------- */
+.today-card{display:flex;flex-direction:column;gap:8px;width:100%;text-align:left;cursor:pointer;background:linear-gradient(135deg,rgba(242,193,78,.10),rgba(13,21,40,.9) 60%);border:1px solid rgba(242,193,78,.55);border-radius:6px;padding:14px}
+.today-card:hover{border-color:var(--gold)}
+.today-card .row{display:flex;justify-content:space-between;align-items:center}
+.today-card .sys-label{color:var(--gold)}
+.today-card .go{font-family:var(--display);font-size:13px;color:var(--gold)}
+.today-stats{font-size:14px;color:var(--muted)}
+.today-stats b{color:#fff;font-family:var(--display)}
+.dot{margin:0 6px;color:var(--locked)}
+.today-prev{display:flex;flex-direction:column;gap:3px;font-size:13.5px;color:var(--text)}
+.today-prev span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.t-daily{padding:12px 14px}
+.t-section{display:flex;flex-direction:column;gap:8px}
+.t-h{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:16px;color:var(--gold);letter-spacing:.06em;text-transform:uppercase}
+.t-h small{font-family:var(--body);font-size:12px;color:var(--muted);text-transform:none;letter-spacing:0}
+.t-tree{display:inline-flex;align-items:center;gap:8px;background:none;border:none;padding:0;color:var(--accent);font:inherit;letter-spacing:inherit;text-transform:inherit;cursor:pointer}
+.t-tree:hover{color:#9be3ff}
+.t-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.t-item{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:4px}
+.t-item.is-done{opacity:.75}
+.t-row{display:flex;gap:8px;align-items:flex-start}
+.t-check{flex:1;display:flex;gap:10px;align-items:flex-start;cursor:pointer;font-size:15px}
+.t-check input{margin-top:3px;accent-color:var(--done);width:18px;height:18px;flex:none}
+.t-check input:checked + span{color:var(--muted);text-decoration:line-through}
+.pin{background:none;border:1px solid transparent;border-radius:4px;color:var(--muted);font-size:18px;line-height:1;cursor:pointer;padding:2px 6px}
+.pin:hover{border-color:var(--line)}
+.pin.on{color:var(--gold)}
+.t-meta{display:flex;align-items:center;flex-wrap:wrap;gap:2px 0;margin-left:28px;font-size:12px;color:var(--muted)}
+.t-meta .xp{margin-left:auto;font-size:11px;color:var(--gold);font-family:var(--display);font-style:normal}
+.t-ico{display:inline-flex;color:var(--accent);margin-right:6px}
+.t-rank{font-family:var(--display);color:var(--accent)}
+.t-item .note-toggle{margin-left:28px}
+.t-item .notes{margin-left:28px}
+.t-empty{margin:0;font-size:14px;color:var(--muted);background:rgba(255,255,255,.02);border:1px dashed var(--line);border-radius:6px;padding:12px}

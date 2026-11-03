@@ -1,5 +1,5 @@
 // Offline cache for Skill Tree. Bump CACHE when you change any app file.
-const CACHE = "skilltree-v6";
+const CACHE = "skilltree-v7";
 const FILES = ["./", "index.html", "styles.css", "app.js", "config.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png"];
 const CACHEABLE_HOSTS = ["cdn.jsdelivr.net", "fonts.googleapis.com", "fonts.gstatic.com"];
 
