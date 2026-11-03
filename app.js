@@ -923,7 +923,7 @@ function mapSvg(t) {
   <svg class="map" viewBox="0 0 ${size} ${size}" width="${Math.round(size * resolveZoom(size))}" height="${Math.round(size * resolveZoom(size))}" data-size="${size}" role="img" aria-label="${esc(t.name)} skill map">
     <defs>
       <filter id="glow" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-      <filter id="glowSoft" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="2.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      <filter id="glowSoft" filterUnits="userSpaceOnUse" x="0" y="0" width="${size}" height="${size}"><feGaussianBlur stdDeviation="2.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
       <radialGradient id="hubFill" cx="50%" cy="40%" r="70%"><stop offset="0%" stop-color="#2a6f8f"/><stop offset="100%" stop-color="#0d1f3a"/></radialGradient>
       <linearGradient id="prism" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff6b9a"/><stop offset=".25" stop-color="#f2c14e"/><stop offset=".5" stop-color="#5ee6a8"/><stop offset=".75" stop-color="#4fc3ff"/><stop offset="1" stop-color="#a98bff"/></linearGradient>
     </defs>
