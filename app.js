@@ -185,7 +185,7 @@ async function accountAction(kind) {
   render();
 }
 
-const ui = { view: "home", treeId: null, edit: false, expanded: {}, mode: "map", zoom: null, sheet: null, recenter: false };
+const ui = { view: "home", treeId: null, edit: false, expanded: {}, mode: "map", zoom: null, sheet: null, recenter: false, notesOpen: {}, pendingDel: null };
 
 /* ---------- lookups & math ---------- */
 const getTree = (id) => state.trees.find((t) => t.id === id);
@@ -271,6 +271,17 @@ function openModal({ title, text, fields = [], confirm = "Save", danger = false,
 }
 function closeModal() { document.getElementById("modal").innerHTML = ""; modalSubmit = null; ui.sheet = null; }
 document.addEventListener("submit", (e) => {
+  const qid = e.target.dataset?.questNote;
+  if (qid) {
+    e.preventDefault();
+    const text = (e.target.elements.note.value || "").trim();
+    const t = getTree(ui.treeId); if (!text || !t) return;
+    const { quest } = find(t, "quest", qid); if (!quest) return;
+    (quest.notes ||= []).push({ id: uid(), text, at: Date.now() });
+    save(); render(); toast("Note saved");
+    const ta = document.getElementById(`nt-${qid}`); if (ta) ta.focus();
+    return;
+  }
   if (e.target.id !== "modal-form") return;
   e.preventDefault();
   const vals = Object.fromEntries(new FormData(e.target).entries());
@@ -499,6 +510,34 @@ function mapView(t) {
   <div class="legend"><span style="--c:var(--locked)">Locked</span><span style="--c:var(--accent)">Unlocked</span><span style="--c:var(--done)">Cleared</span><span style="--c:var(--gold)">Tap a skill to see its quests</span></div>`;
 }
 
+/* ---------- quest notes (a dated progress log per quest) ---------- */
+function fmtDate(ms) {
+  const d = new Date(ms), now = new Date();
+  const opts = { month: "short", day: "numeric" };
+  if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString(undefined, opts);
+}
+function notesBlock(q) {
+  const notes = q.notes || [], open = !!ui.notesOpen[q.id];
+  return `
+    <button type="button" class="note-toggle ${notes.length ? "has" : ""}" data-action="toggle-notes" data-id="${q.id}" aria-expanded="${open}">
+      ${open ? "Hide notes" : notes.length ? `Notes · ${notes.length}` : "+ Add note"}
+    </button>
+    ${open ? `<div class="notes">
+      ${notes.map((n) => `
+        <div class="note">
+          <time>${fmtDate(n.at)}</time>
+          <p>${esc(n.text)}</p>
+          <button type="button" class="note-del ${ui.pendingDel === n.id ? "arm" : ""}" data-action="del-note" data-id="${q.id}" data-note="${n.id}" aria-label="Delete note">${ui.pendingDel === n.id ? "Delete?" : "✕"}</button>
+        </div>`).join("")}
+      <form class="note-form" data-quest-note="${q.id}">
+        <label class="sr" for="nt-${q.id}">New note</label>
+        <textarea id="nt-${q.id}" name="note" rows="2" placeholder="What progress did you make?"></textarea>
+        <button class="btn" type="submit">Add note</button>
+      </form>
+    </div>` : ""}`;
+}
+
 /* ---------- bottom sheet ---------- */
 function sheetHtml(t) {
   const sh = ui.sheet;
@@ -516,7 +555,7 @@ function sheetHtml(t) {
       <div class="chiprow"><span class="state ${dn ? "done" : open ? "open" : "locked"}">${dn ? "Cleared" : open ? `${cnt} of ${node.quests.length} done` : "Locked"}</span></div>
       ${!open ? `<p class="sheet-note">Clear <b>${esc(branch.nodes[i - 1].name)}</b> to unlock. Here's what's ahead:</p>` : ""}
       <ul class="quests sheet-quests">${node.quests.length ? node.quests.map((q) => `
-        <li><label for="sq-${q.id}"><input type="checkbox" id="sq-${q.id}" data-quest="${q.id}" ${q.done ? "checked" : ""} ${open ? "" : "disabled"}><span>${esc(q.text)}</span><em class="xp">+${RANK_XP[node.rank]} XP</em></label></li>`).join("")
+        <li><label for="sq-${q.id}"><input type="checkbox" id="sq-${q.id}" data-quest="${q.id}" ${q.done ? "checked" : ""} ${open ? "" : "disabled"}><span>${esc(q.text)}</span><em class="xp">+${RANK_XP[node.rank]} XP</em></label>${open ? notesBlock(q) : ""}</li>`).join("")
         : `<li class="empty">No quests yet. Use Edit to add some.</li>`}</ul>`;
   } else if (sh.type === "branch") {
     const { branch } = find(t, "branch", sh.id);
@@ -574,7 +613,7 @@ function treeView(t) {
           </li>`).join("") + `<li><button class="add-row" type="button" data-action="add-quest" data-id="${n.id}">+ Add quest</button></li>`
         : n.quests.length
         ? n.quests.map((q) => `
-          <li><label for="q-${q.id}"><input type="checkbox" id="q-${q.id}" data-quest="${q.id}" ${q.done ? "checked" : ""}><span>${esc(q.text)}</span><em class="xp">+${RANK_XP[n.rank]} XP</em></label></li>`).join("")
+          <li><label for="q-${q.id}"><input type="checkbox" id="q-${q.id}" data-quest="${q.id}" ${q.done ? "checked" : ""}><span>${esc(q.text)}</span><em class="xp">+${RANK_XP[n.rank]} XP</em></label>${open ? notesBlock(q) : ""}</li>`).join("")
         : `<li class="empty">No quests yet. Tap Edit to add some.</li>`;
       return `
       <div class="node ${dn ? "done" : open ? "open" : "locked"} ${expanded ? "expanded" : ""}">
@@ -681,7 +720,7 @@ function settingsView() {
     <p>Erases all trees, progress, and your streak${session ? " on every synced device" : " on this device"}.</p>
     <div class="btnrow"><button class="btn danger" type="button" data-action="reset">Reset all data</button></div>
   </section>
-  <p class="foot">Skill Tree v1.2</p>`;
+  <p class="foot">Skill Tree v1.3</p>`;
 }
 
 function render() {
@@ -758,6 +797,14 @@ document.addEventListener("click", (e) => {
     case "open-tree": ui.view = "tree"; ui.treeId = id; ui.edit = false; ui.zoom = null; ui.recenter = true; window.scrollTo(0, 0); break;
     case "toggle-edit": ui.edit = !ui.edit; ui.sheet = null; ui.recenter = true; break;
     case "mode-list": ui.mode = "list"; ui.sheet = null; break;
+    case "toggle-notes": ui.notesOpen[id] = !ui.notesOpen[id]; ui.pendingDel = null; render(); if (ui.notesOpen[id]) document.getElementById(`nt-${id}`)?.focus({ preventScroll: true }); return;
+    case "del-note": {
+      const nid = el.dataset.note;
+      if (ui.pendingDel !== nid) { ui.pendingDel = nid; render(); setTimeout(() => { if (ui.pendingDel === nid) { ui.pendingDel = null; render(); } }, 3000); return; }
+      const { quest } = find(t, "quest", id);
+      if (quest) quest.notes = (quest.notes || []).filter((n) => n.id !== nid);
+      ui.pendingDel = null; break;
+    }
     case "mode-map": ui.mode = "map"; ui.recenter = true; break;
     case "sheet-node": ui.sheet = { type: "node", id }; renderSheet(); return;
     case "sheet-branch": ui.sheet = { type: "branch", id }; renderSheet(); return;

@@ -249,3 +249,20 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .cap-label input{margin-top:3px;accent-color:var(--gold);width:16px;height:16px}
 @media (prefers-reduced-motion:reduce){.m-hex,.m-hub .m-hex{animation:none!important}.sheet{animation:none}}
 .map-inner{min-width:100%;min-height:100%;width:max-content;height:max-content;display:flex;align-items:center;justify-content:center}
+
+/* ---------- v1.3: quest notes ---------- */
+.note-toggle{align-self:flex-start;margin:4px 0 0 34px;background:none;border:none;padding:2px 0;color:var(--muted);font-size:12px;cursor:pointer;font-family:var(--display);letter-spacing:.05em}
+.note-toggle.has{color:var(--gold)}
+.note-toggle:hover{color:var(--text)}
+.quests li{display:flex;flex-direction:column}
+.notes{margin:6px 0 4px 34px;display:flex;flex-direction:column;gap:6px;border-left:2px solid rgba(242,193,78,.35);padding-left:10px}
+.note{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:start;font-size:13.5px}
+.note time{font-family:var(--display);font-size:11px;color:var(--gold);white-space:nowrap;padding-top:2px;font-variant-numeric:tabular-nums}
+.note p{margin:0;color:var(--text);white-space:pre-wrap;overflow-wrap:anywhere}
+.note-del{background:none;border:1px solid transparent;border-radius:4px;color:var(--muted);cursor:pointer;font-size:12px;padding:0 6px;min-height:24px}
+.note-del:hover{border-color:var(--line)}
+.note-del.arm{color:var(--danger);border-color:var(--danger)}
+.note-form{display:flex;flex-direction:column;gap:6px}
+.note-form textarea{background:#0a1122;border:1px solid var(--line);border-radius:4px;padding:8px;font-size:16px;resize:vertical;color:var(--text)}
+.note-form .btn{align-self:flex-end;padding:6px 12px;font-size:13px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
