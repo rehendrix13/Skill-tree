@@ -1440,7 +1440,17 @@ async function pushTest() {
     const { data, error } = await sb.functions.invoke("notify", { body: { test: true } });
     if (error) throw error;
     pushSt.msg = data && data.sent ? "Test sent. It should arrive in a few seconds." : "The System couldn't reach this device. Try turning notifications off and on.";
-  } catch (e) { pushSt.msg = "Test failed: the notification service isn't set up yet, or it isn't responding."; }
+  } catch (e) {
+    let detail = e && e.message ? e.message : String(e);
+    try {
+      const ctx = e && e.context;
+      if (ctx && typeof ctx.status === "number") {
+        let txt = ""; try { txt = await ctx.text(); } catch (_) {}
+        detail = `HTTP ${ctx.status}${txt ? ": " + txt.slice(0, 200) : ""}`;
+      }
+    } catch (_) {}
+    pushSt.msg = `Test failed (${detail}). ${/404/.test(detail) ? "The function isn't deployed or isn't named notify." : /401/.test(detail) ? "JWT verification is still on." : /Failed to send|fetch|CORS|NetworkError|Load failed/i.test(detail) ? "Couldn't reach the function. Check that it's deployed and JWT verification is off." : "Check the function's Logs in Supabase."}`;
+  }
   pushSt.busy = false; render();
 }
 function notificationsCard() {
