@@ -418,3 +418,8 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .ds-grid .ds-card:last-child:nth-child(odd){grid-column:1 / -1}
 @media (min-width:760px){.ds-body{flex-direction:row;align-items:center}.ds-radar{flex:0 0 46%}.ds-grid{flex:1}}
 @media (max-width:520px){.ds-grid{grid-template-columns:1fr;gap:6px}.ds-card{padding:7px 10px}.ds-pts{flex-direction:row;align-items:baseline;gap:5px}.ds-pts i{margin-top:0}}
+
+/* ---------- v1.7: notifications ---------- */
+.hours{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.hour{background:rgba(10,17,34,.7);border:1px solid var(--line);border-radius:4px;padding:8px 0;color:var(--muted);cursor:pointer;font-family:var(--display);font-size:13px;letter-spacing:.04em}
+.hour.on{border-color:var(--gold);color:var(--gold);background:rgba(242,193,78,.12)}

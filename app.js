@@ -122,7 +122,7 @@ function initSync() {
   });
   sb.auth.onAuthStateChange((evt, s) => {
     const had = !!session; session = s;
-    if (evt === "SIGNED_IN" && !had) { acctMsg = ""; pull(); render(); }
+    if (evt === "SIGNED_IN" && !had) { acctMsg = ""; pull(); render(); pushRefresh(); }
     if (evt === "SIGNED_OUT") { setStatus("signedout"); render(); }
   });
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && session) pull(); });
@@ -1038,6 +1038,7 @@ function settingsView() {
          <div class="btnrow"><button class="btn" type="button" data-action="sign-in">Sign in</button><button class="btn ghost" type="button" data-action="sign-up">Create account</button></div>`}
     ${acctMsg ? `<p style="color:var(--gold)">${esc(acctMsg)}</p>` : ""}
   </section>
+  ${notificationsCard()}
   <section class="card">
     <h2>Back up your progress</h2>
     <p>${session ? "Syncing keeps your data in your account, but an extra backup never hurts." : "Without syncing, your data lives only on this device. Copy a backup now and then and keep it somewhere safe."}</p>
@@ -1070,7 +1071,7 @@ function settingsView() {
     <p>Erases all trees, progress, and your streak${session ? " on every synced device" : " on this device"}.</p>
     <div class="btnrow"><button class="btn danger" type="button" data-action="reset">Reset all data</button></div>
   </section>
-  <p class="foot">Skill Tree v1.6</p>`;
+  <p class="foot">Skill Tree v1.7</p>`;
 }
 
 function render() {
@@ -1143,7 +1144,7 @@ document.addEventListener("click", (e) => {
     case "modal-bg": if (e.target === el) closeModal(); return;
     case "modal-close": closeModal(); return;
     case "home": ui.view = "home"; ui.edit = false; break;
-    case "settings": ui.view = "settings"; break;
+    case "settings": ui.view = "settings"; pushRefresh(); break;
     case "today": ui.view = "today"; ui.sheet = null; window.scrollTo(0, 0); break;
     case "disc-done": {
       const d = discFor(); if (!d || d.entry) return;
@@ -1326,6 +1327,10 @@ document.addEventListener("click", (e) => {
     case "sign-up": accountAction("up"); return;
     case "sign-out": accountAction("out"); return;
     case "sync-now": pull(); return;
+    case "push-on": pushEnable(); return;
+    case "push-off": pushDisable(); return;
+    case "push-test": pushTest(); return;
+    case "push-hour": pushToggleHour(+id); return;
     case "reseed": state.trees.push(seedPO()); toast("Product Owner tree added"); ui.view = "home"; break;
     case "reset":
       openModal({ title: "Reset everything?", text: "All trees, progress, and your streak will be erased from this device.", confirm: "Reset", danger: true,
@@ -1367,6 +1372,92 @@ function onQuestToggle(qid, checked) {
   const after = levelFor(totalXP());
   if (after > before) setTimeout(() => toast(`LEVEL UP! You are now Level ${after}`), 900);
   render();
+}
+
+/* ---------- push notifications ---------- */
+const PUSH_HOURS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21];
+const hourLabel = (h) => `${((h + 11) % 12) + 1}${h < 12 ? "am" : "pm"}`;
+const isStandalone = () => window.matchMedia?.("(display-mode: standalone)").matches || navigator.standalone === true;
+const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+const pushSt = { sub: null, row: null, checked: false, busy: false, msg: "" };
+function b64ToBytes(b64) {
+  const pad = "=".repeat((4 - (b64.length % 4)) % 4), raw = atob((b64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+async function pushRefresh() {
+  pushSt.checked = true;
+  try {
+    if (pushSupported()) { const reg = await navigator.serviceWorker.ready; pushSt.sub = await reg.pushManager.getSubscription(); }
+    if (pushSt.sub && sb && session) {
+      const { data } = await sb.from("push_subs").select("id,times,enabled").eq("endpoint", pushSt.sub.endpoint).maybeSingle();
+      pushSt.row = data || null;
+    } else pushSt.row = null;
+  } catch (e) { pushSt.row = null; }
+  if (ui.view === "settings") render();
+}
+async function pushEnable() {
+  if (!sb || !session) { pushSt.msg = "Sign in first so the System knows your progress."; return render(); }
+  if (!CFG.vapidPublicKey) { pushSt.msg = "Notifications aren't configured yet."; return render(); }
+  pushSt.busy = true; pushSt.msg = ""; render();
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") throw new Error("Notifications are blocked. Turn them on for Skill Tree in your device's Settings → Notifications, then try again.");
+    const reg = await navigator.serviceWorker.ready;
+    const sub = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(CFG.vapidPublicKey) }));
+    const j = sub.toJSON();
+    const { error } = await sb.from("push_subs").upsert({
+      user_id: session.user.id, endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth,
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Chicago", enabled: true,
+      times: pushSt.row?.times || [8, 12, 15, 18],
+    }, { onConflict: "endpoint" });
+    if (error) throw error;
+    pushSt.sub = sub; pushSt.msg = "Notifications are on for this device.";
+    await pushRefresh();
+  } catch (e) { pushSt.msg = String(e.message || e); }
+  pushSt.busy = false; render();
+}
+async function pushDisable() {
+  pushSt.busy = true; render();
+  try {
+    if (pushSt.sub) { if (sb && session) await sb.from("push_subs").delete().eq("endpoint", pushSt.sub.endpoint); await pushSt.sub.unsubscribe(); }
+    pushSt.sub = null; pushSt.row = null; pushSt.msg = "Notifications are off for this device.";
+  } catch (e) { pushSt.msg = String(e.message || e); }
+  pushSt.busy = false; render();
+}
+async function pushToggleHour(h) {
+  if (!pushSt.row) return;
+  const set = new Set(pushSt.row.times || []);
+  set.has(h) ? set.delete(h) : set.add(h);
+  const times = [...set].sort((a, b) => a - b);
+  if (!times.length) { toast("Keep at least one alert time"); return; }
+  pushSt.row.times = times; render();
+  const { error } = await sb.from("push_subs").update({ times, tz: Intl.DateTimeFormat().resolvedOptions().timeZone }).eq("endpoint", pushSt.sub.endpoint);
+  if (error) toast("Couldn't save times. Check your connection.");
+}
+async function pushTest() {
+  pushSt.busy = true; pushSt.msg = ""; render();
+  try {
+    const { data, error } = await sb.functions.invoke("notify", { body: { test: true } });
+    if (error) throw error;
+    pushSt.msg = data && data.sent ? "Test sent. It should arrive in a few seconds." : "The System couldn't reach this device. Try turning notifications off and on.";
+  } catch (e) { pushSt.msg = "Test failed: the notification service isn't set up yet, or it isn't responding."; }
+  pushSt.busy = false; render();
+}
+function notificationsCard() {
+  let body;
+  if (!pushSupported() && !isStandalone()) body = `<p>On iPhone and iPad, notifications only work from the home-screen app. In Safari, tap Share → <b style="color:var(--text)">Add to Home Screen</b>, then open Skill Tree from that icon.</p>`;
+  else if (!pushSupported()) body = `<p>This device doesn't support web notifications. iPhone and iPad need iOS 16.4 or newer.</p>`;
+  else if (!session) body = `<p>Sign in above first. The System checks your synced progress before it alerts you.</p>`;
+  else if (!pushSt.checked) body = `<p>Checking…</p>`;
+  else if (!pushSt.sub || !pushSt.row) body = `
+    <p>Get System alerts at the hours you choose. They only fire when your Daily Discipline or focus block is still incomplete, and tell you exactly what's left.</p>
+    <div class="btnrow"><button class="btn" type="button" data-action="push-on" ${pushSt.busy ? "disabled" : ""}>Enable notifications</button></div>`;
+  else body = `
+    <p>On for this device. Tap hours to choose when the System checks in.</p>
+    <div class="hours">${PUSH_HOURS.map((h) => `<button type="button" class="hour ${pushSt.row.times.includes(h) ? "on" : ""}" data-action="push-hour" data-id="${h}" aria-pressed="${pushSt.row.times.includes(h)}">${hourLabel(h)}</button>`).join("")}</div>
+    <p style="font-size:12.5px">First alert: Daily Quest arrives · Middle: status checks and warnings · Last: final notice before the day resets.</p>
+    <div class="btnrow"><button class="btn" type="button" data-action="push-test" ${pushSt.busy ? "disabled" : ""}>Send test</button><button class="btn ghost" type="button" data-action="push-off" ${pushSt.busy ? "disabled" : ""}>Turn off</button></div>`;
+  return `<section class="card"><h2>Notifications</h2>${body}${pushSt.msg ? `<p style="color:var(--gold)">${esc(pushSt.msg)}</p>` : ""}</section>`;
 }
 
 /* ---------- offline support ---------- */
