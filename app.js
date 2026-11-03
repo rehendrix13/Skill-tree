@@ -59,8 +59,26 @@ function seedPO() {
 /* ---------- state ---------- */
 let state;
 // updatedAt 0 = untouched starter data, so cloud data always wins over it.
-function freshState() { return { version: 1, trees: [seedPO()], days: [], updatedAt: 0 }; }
-function normalize(s) { return { version: 1, days: [], updatedAt: 0, ...s, trees: Array.isArray(s.trees) ? s.trees : [] }; }
+/* ---------- daily discipline: one area per weekday ---------- */
+const DISC_XP = 15;
+const DEFAULT_DISC = [
+  [1, "Leadership", "LDR", "crown", ["Write down the one outcome that would make this week a win, and share it with your team", "Give one person specific, genuine recognition", "Ask someone, \"What's one thing I could do better?\" and just listen", "Make one decision you've been putting off"]],
+  [2, "Intellect", "INT", "book", ["Read 20 pages of a nonfiction book", "Learn one new concept and explain it in 3 sentences", "Watch one talk or lecture and take notes", "Write down a question you're curious about and spend 15 minutes researching it"]],
+  [3, "Physical", "STR", "dumbbell", ["Take a 20-minute walk with no phone", "Stretch for 10 minutes", "Do a bodyweight circuit: squats, push-ups, planks", "Drink water with every meal and get to bed 30 minutes earlier tonight"]],
+  [4, "Communication", "CHA", "chat", ["Rewrite one email or message to be half as long", "In one conversation, ask a follow-up question before giving your opinion", "Explain something technical to someone non-technical", "Reach out to someone you haven't talked to in a while"]],
+  [5, "Creativity", "CRE", "pen", ["Write 300 words of fiction, even bad ones", "Sketch, journal, or work on your craft for 15 minutes", "Collect 3 story ideas from your day", "Make something with your hands"]],
+  [6, "Wisdom", "WIS", "bulb", ["Write down one mistake from this week and what it taught you", "Read one chapter of philosophy or a biography", "Spend 10 minutes in silence or meditation", "Ask yourself: \"What would the person I want to be do differently this week?\""]],
+  [0, "Emotional", "EQ", "heart", ["Journal for 10 minutes: what drained you this week, and what filled you up", "Write down 3 specific things you're grateful for", "Name one feeling you avoided this week and why", "Plan one thing next week just for joy"]],
+];
+const seedDisciplines = () => ({ areas: DEFAULT_DISC.map(([day, name, stat, icon, tasks]) => ({ id: uid(), day, name, stat, icon, tasks: [...tasks] })), log: {}, swaps: {} });
+
+function freshState() { return { version: 1, trees: [seedPO()], days: [], updatedAt: 0, disciplines: seedDisciplines() }; }
+function normalize(s) {
+  const out = { version: 1, days: [], updatedAt: 0, ...s, trees: Array.isArray(s.trees) ? s.trees : [] };
+  if (!out.disciplines || !Array.isArray(out.disciplines.areas)) out.disciplines = seedDisciplines();
+  out.disciplines.log ||= {}; out.disciplines.swaps ||= {};
+  return out;
+}
 function load() {
   try {
     const s = JSON.parse(localStorage.getItem(STORE_KEY));
@@ -215,7 +233,7 @@ function treeStats(t) {
   if (t.capstone.text) { total++; max += CAPSTONE_XP; if (t.capstone.done) { done++; xp += CAPSTONE_XP; } }
   return { xp, max, done, total, pct: max ? xp / max : 0 };
 }
-const totalXP = () => state.trees.reduce((a, t) => a + treeStats(t).xp, 0);
+const totalXP = () => state.trees.reduce((a, t) => a + treeStats(t).xp, 0) + Object.keys(state.disciplines?.log || {}).length * DISC_XP;
 const levelFor = (xp) => 1 + Math.floor(xp / XP_PER_LEVEL);
 function rankFor(t) {
   const { pct } = treeStats(t);
@@ -275,6 +293,12 @@ function openModal({ title, text, fields = [], confirm = "Save", danger = false,
 }
 function closeModal() { document.getElementById("modal").innerHTML = ""; modalSubmit = null; ui.sheet = null; }
 document.addEventListener("submit", (e) => {
+  if (e.target.dataset?.discNote) {
+    e.preventDefault();
+    const entry = state.disciplines.log[today()]; if (!entry) return;
+    entry.note = (e.target.elements.note.value || "").trim();
+    save(); render(); toast("Reflection saved"); return;
+  }
   const qid = e.target.dataset?.questNote;
   if (qid) {
     e.preventDefault();
@@ -299,6 +323,67 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ---------- views ---------- */
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const areaForDay = (dow) => state.disciplines.areas.find((a) => a.day === dow);
+const weekIdx = (d) => Math.floor((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000 + 3) / 7);
+function discFor(d = new Date()) {
+  const a = areaForDay(d.getDay()); if (!a || !a.tasks.length) return null;
+  const key = dayKey(d), idx = (state.disciplines.swaps[key] ?? weekIdx(d)) % a.tasks.length;
+  return { area: a, idx, text: a.tasks[idx], key, entry: state.disciplines.log[key] };
+}
+function statPoints() {
+  const pts = {};
+  state.disciplines.areas.forEach((a) => (pts[a.id] = 0));
+  Object.values(state.disciplines.log).forEach((e) => { if (e.areaId in pts) pts[e.areaId]++; });
+  return pts;
+}
+function discStreak() {
+  const log = state.disciplines.log; let s = 0; const d = new Date();
+  if (!log[today()]) d.setDate(d.getDate() - 1);
+  while (log[dayKey(d)]) { s++; d.setDate(d.getDate() - 1); }
+  return s;
+}
+const orderedAreas = () => [...state.disciplines.areas].sort((a, b) => ((a.day + 6) % 7) - ((b.day + 6) % 7));
+function statGrid() {
+  const pts = statPoints();
+  return `<div class="stats" aria-label="Stats">${orderedAreas().map((a) => `<span class="stat ${areaForDay(new Date().getDay()) === a ? "now" : ""}" title="${esc(a.name)}"><i>${esc(a.stat)}</i><b>${pts[a.id]}</b></span>`).join("")}</div>`;
+}
+function weekStrip() {
+  const now = new Date(), monday = new Date(now); monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+  return `<div class="week">${Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(monday); d.setDate(monday.getDate() + i);
+    const a = areaForDay(d.getDay()), key = dayKey(d), done = !!state.disciplines.log[key], isT = key === today(), past = d < now && !isT;
+    return `<span class="wk ${done ? "done" : ""} ${isT ? "today" : ""} ${past && !done ? "missed" : ""}" title="${DAY_NAMES[d.getDay()]}: ${esc(a?.name || "")}">
+      <svg viewBox="0 0 40 44" aria-hidden="true"><polygon points="${hexPts(20, 22, 18)}"/><text x="20" y="26" text-anchor="middle">${esc((a?.stat || "").slice(0, 3))}</text></svg>
+      <small>${DAY_NAMES[d.getDay()].slice(0, 3)}</small></span>`;
+  }).join("")}</div>`;
+}
+function disciplineCard() {
+  const d = discFor();
+  if (!d) return `<section class="disc"><p class="t-empty">No discipline set for ${DAY_NAMES[new Date().getDay()]}. Add one in Settings.</p></section>`;
+  const { area, text, entry } = d, ai = state.disciplines.areas.indexOf(area);
+  const done = !!entry, pts = statPoints()[area.id];
+  return `
+  <section class="disc ${done ? "done" : ""}" aria-label="Daily discipline">
+    <div class="disc-head">
+      <span class="disc-hex">${iconHtml(ICONS[area.icon] ? area.icon : iconFor(area, ai), 24)}</span>
+      <div><div class="sys-label">Daily Discipline · ${DAY_NAMES[new Date().getDay()]}</div><h2>${esc(area.name)} <span class="disc-stat">${esc(area.stat)} ${pts}</span></h2></div>
+    </div>
+    <p class="disc-task">${esc(done ? entry.text : text)}</p>
+    <div class="btnrow">
+      ${done ? `<span class="state done">Complete · +1 ${esc(area.stat)} · +${DISC_XP} XP</span><button class="tool" type="button" data-action="disc-undo">Undo</button>`
+        : `<button class="btn" type="button" data-action="disc-done">Complete  +${DISC_XP} XP</button>${area.tasks.length > 1 ? `<button class="btn ghost" type="button" data-action="disc-swap">Swap task</button>` : ""}`}
+    </div>
+    ${done ? `<form class="note-form disc-note" data-disc-note="1">
+      <label class="sr" for="disc-note">Reflection</label>
+      <textarea id="disc-note" name="note" rows="2" placeholder="How did it go? (optional)">${esc(entry.note || "")}</textarea>
+      <button class="btn ghost" type="submit">${entry.note ? "Update reflection" : "Save reflection"}</button>
+    </form>` : ""}
+    ${weekStrip()}
+    <p class="disc-foot">Streak: <b>${discStreak()}</b> day${discStreak() === 1 ? "" : "s"} · Tasks rotate weekly. Edit them in Settings.</p>
+  </section>`;
+}
+
 function statusWindow() {
   const xp = totalXP(), lvl = levelFor(xp), into = xp % XP_PER_LEVEL;
   const logged = state.days.includes(today());
@@ -312,6 +397,7 @@ function statusWindow() {
       <div class="bar" aria-hidden="true"><i style="width:${(into / XP_PER_LEVEL) * 100}%"></i></div>
       <div class="meta"><span>${xp} XP total</span><span>${XP_PER_LEVEL - into} XP to Lv ${lvl + 1}</span></div>
     </div>
+    ${statGrid()}
     <div class="daily">
       <p>Daily quest: one 45-minute focus block, phone in another room.<br>Streak: <b>${streak()}</b> day${streak() === 1 ? "" : "s"}</p>
       <button class="btn" type="button" data-action="daily" ${logged ? "disabled" : ""}>${logged ? "Today's block logged" : "Log today's block"}</button>
@@ -590,6 +676,8 @@ function todayView() {
     <p>${avail.length} quest${avail.length === 1 ? "" : "s"} available · ${cleared.length} cleared today · +${xpToday} XP today</p>
   </header>
 
+  ${disciplineCard()}
+
   <section class="window t-daily">
     <div class="daily" style="margin:0;padding:0;border:none">
       <p><b style="color:var(--accent)">Daily quest:</b> one 45-minute focus block.<br>Streak: <b>${streak()}</b> day${streak() === 1 ? "" : "s"}</p>
@@ -620,9 +708,11 @@ function todayView() {
 function todayCard() {
   const { avail, cleared, pinned } = todayData();
   const preview = (pinned.length ? pinned : avail).slice(0, 3);
+  const dsc = discFor();
   return `
   <button class="today-card" type="button" data-action="today">
     <span class="row"><span class="sys-label">Today's Quest Board</span><span class="go">Open →</span></span>
+    ${dsc ? `<span class="today-disc ${dsc.entry ? "done" : ""}"><b>${esc(dsc.area.stat)}</b> ${esc(dsc.area.name)}: ${esc(dsc.entry ? dsc.entry.text : dsc.text)}${dsc.entry ? " ✓" : ""}</span>` : ""}
     <span class="today-stats"><b>${avail.length}</b> available<span class="dot">·</span><b>${pinned.length}</b> pinned<span class="dot">·</span><b>${cleared.length}</b> cleared today</span>
     ${preview.length ? `<span class="today-prev">${preview.map((i) => `<span>${i.quest.pinned ? "★" : "▸"} ${esc(i.quest.text)}</span>`).join("")}</span>` : ""}
   </button>`;
@@ -801,6 +891,11 @@ function settingsView() {
     </div>
   </section>
   <section class="card">
+    <h2>Daily Discipline</h2>
+    <p>One area per weekday. The task rotates each week through that day's list.</p>
+    <div class="sheet-list">${orderedAreas().map((a) => `<button type="button" class="sheet-row" data-action="edit-area" data-id="${a.id}"><b class="r open">${DAY_NAMES[a.day].slice(0, 3)}</b><span>${esc(a.name)} <small style="color:var(--muted)">(${esc(a.stat)})</small></span><span class="state open">${a.tasks.length} tasks</span></button>`).join("")}</div>
+  </section>
+  <section class="card">
     <h2>Add the Product Owner tree again</h2>
     <p>Adds a fresh copy of the starter tree, if you deleted it or want a clean run.</p>
     <div class="btnrow"><button class="btn ghost" type="button" data-action="reseed">Add starter tree</button></div>
@@ -810,7 +905,7 @@ function settingsView() {
     <p>Erases all trees, progress, and your streak${session ? " on every synced device" : " on this device"}.</p>
     <div class="btnrow"><button class="btn danger" type="button" data-action="reset">Reset all data</button></div>
   </section>
-  <p class="foot">Skill Tree v1.4</p>`;
+  <p class="foot">Skill Tree v1.5</p>`;
 }
 
 function render() {
@@ -885,6 +980,31 @@ document.addEventListener("click", (e) => {
     case "home": ui.view = "home"; ui.edit = false; break;
     case "settings": ui.view = "settings"; break;
     case "today": ui.view = "today"; ui.sheet = null; window.scrollTo(0, 0); break;
+    case "disc-done": {
+      const d = discFor(); if (!d || d.entry) return;
+      const before = levelFor(totalXP());
+      state.disciplines.log[d.key] = { areaId: d.area.id, stat: d.area.stat, text: d.text, at: Date.now() };
+      toast(`+1 ${d.area.stat} · +${DISC_XP} XP`);
+      const after = levelFor(totalXP());
+      if (after > before) setTimeout(() => toast(`LEVEL UP! You are now Level ${after}`), 1000);
+      break;
+    }
+    case "disc-undo": delete state.disciplines.log[today()]; break;
+    case "disc-swap": { const d = discFor(); if (!d || d.entry) return; state.disciplines.swaps = { [d.key]: (d.idx + 1) % d.area.tasks.length }; break; }
+    case "edit-area": {
+      const a = state.disciplines.areas.find((x) => x.id === id); if (!a) return;
+      openModal({ title: `${DAY_NAMES[a.day]} discipline`, text: "One task per line. The app rotates through them week by week.",
+        fields: [{ id: "name", label: "Area", value: a.name, required: true }, { id: "stat", label: "Stat abbreviation (up to 4 letters)", value: a.stat },
+          { id: "icon", label: "Icon", type: "select", value: a.icon || "", options: iconOptions() }, { id: "tasks", label: "Tasks", type: "textarea", value: a.tasks.join("\n") }],
+        onSubmit: (v) => {
+          if (v.name) a.name = v.name;
+          if (v.stat) a.stat = v.stat.toUpperCase().slice(0, 4);
+          a.icon = v.icon;
+          const tasks = (v.tasks || "").split("\n").map((x) => x.trim()).filter(Boolean);
+          if (tasks.length) a.tasks = tasks;
+        } });
+      return;
+    }
     case "pin": { const { quest } = findQuest(id); if (quest) { quest.pinned = !quest.pinned; if (quest.pinned) toast("Pinned to Focus"); } break; }
     case "open-tree": ui.view = "tree"; ui.treeId = id; ui.edit = false; ui.zoom = null; ui.recenter = true; window.scrollTo(0, 0); break;
     case "toggle-edit": ui.edit = !ui.edit; ui.sheet = null; ui.recenter = true; break;
