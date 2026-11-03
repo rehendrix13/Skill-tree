@@ -1437,7 +1437,7 @@ async function pushToggleHour(h) {
 async function pushTest() {
   pushSt.busy = true; pushSt.msg = ""; render();
   try {
-    const { data, error } = await sb.functions.invoke("notify", { body: { test: true } });
+    const { data, error } = await sb.functions.invoke("Notify", { body: { test: true } });
     if (error) throw error;
     pushSt.msg = data && data.sent ? "Test sent. It should arrive in a few seconds." : "The System couldn't reach this device. Try turning notifications off and on.";
   } catch (e) {

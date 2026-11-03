@@ -19,7 +19,7 @@ create extension if not exists pg_cron;
 create extension if not exists pg_net;
 select cron.schedule('skilltree-notify', '*/15 * * * *', $$
   select net.http_post(
-    url := 'https://vozkyinemhdzdfhpywlj.supabase.co/functions/v1/notify',
+    url := 'https://vozkyinemhdzdfhpywlj.supabase.co/functions/v1/Notify',
     headers := '{"Content-Type": "application/json", "x-cron-secret": "PASTE_YOUR_CRON_SECRET_HERE"}'::jsonb,
     body := '{}'::jsonb
   );
