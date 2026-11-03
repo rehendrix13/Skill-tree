@@ -394,3 +394,27 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .chip-f{background:none;border:1px solid var(--line);border-radius:999px;padding:5px 12px;color:var(--muted);cursor:pointer;font-family:var(--display);font-size:12px;letter-spacing:.06em}
 .chip-f.on{border-color:var(--accent);color:var(--accent);background:rgba(79,195,255,.12)}
 @media (max-width:380px){.tile b{font-size:19px}}
+
+/* ---------- v1.6.1: disciplines section ---------- */
+.disc-section{border:1px solid rgba(242,193,78,.55);border-radius:6px;padding:16px;background:linear-gradient(180deg,rgba(242,193,78,.07),rgba(13,21,40,.92) 40%);box-shadow:0 0 22px rgba(242,193,78,.08);display:flex;flex-direction:column;gap:12px}
+.ds-head{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.ds-head h2{font-size:19px;color:#fff;margin-top:2px}
+.ds-body{display:flex;flex-direction:column;gap:12px;align-items:center}
+.ds-radar{width:100%;display:flex;justify-content:center}
+.ds-grid{width:100%;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.ds-card{display:flex;align-items:center;gap:10px;background:rgba(10,17,34,.7);border:1px solid var(--line);border-radius:6px;padding:8px 10px;cursor:pointer;text-align:left;min-width:0}
+.ds-card:hover{border-color:var(--accent)}
+.ds-card.now{border-color:var(--gold);box-shadow:0 0 12px rgba(242,193,78,.18)}
+.ds-hex{flex:none;width:32px;height:36px;display:grid;place-items:center;color:#e8f7ff;clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);background:linear-gradient(160deg,#2a6f8f,#11294a)}
+.ds-card.now .ds-hex{background:linear-gradient(160deg,#ffd877,#c8922a);color:#1a1204}
+.ds-card.done .ds-hex{background:linear-gradient(160deg,#9af5cb,#2fae78);color:#04170e}
+.ds-txt{flex:1;min-width:0;display:flex;flex-direction:column}
+.ds-txt b{font-family:var(--display);font-size:14px;color:#fff;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ds-txt small{font-size:11px;color:var(--muted)}
+.ds-card.now .ds-txt small{color:var(--gold)}
+.ds-pts{display:flex;flex-direction:column;align-items:center;line-height:1}
+.ds-pts b{font-family:var(--display);font-size:18px;color:#fff}
+.ds-pts i{font-style:normal;font-family:var(--display);font-size:9.5px;letter-spacing:.08em;color:var(--muted);margin-top:2px}
+.ds-grid .ds-card:last-child:nth-child(odd){grid-column:1 / -1}
+@media (min-width:760px){.ds-body{flex-direction:row;align-items:center}.ds-radar{flex:0 0 46%}.ds-grid{flex:1}}
+@media (max-width:520px){.ds-grid{grid-template-columns:1fr;gap:6px}.ds-card{padding:7px 10px}.ds-pts{flex-direction:row;align-items:baseline;gap:5px}.ds-pts i{margin-top:0}}

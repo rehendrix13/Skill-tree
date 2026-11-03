@@ -517,6 +517,29 @@ function journalView() {
   ${list.length ? `<ul class="j-list">${items}</ul>` : `<p class="t-empty">No entries here yet. Add notes from a discipline's page, a quest, or your daily reflection.</p>`}`;
 }
 
+function disciplinesSection() {
+  const pts = statPoints(), todayDow = new Date().getDay();
+  return `
+  <section class="disc-section" aria-label="Disciplines">
+    <div class="ds-head">
+      <div><div class="sys-label" style="color:var(--gold)">Disciplines</div><h2>Your seven stats</h2></div>
+      <button type="button" class="iconbtn" data-action="journal">Journal</button>
+    </div>
+    <div class="ds-body">
+      <div class="ds-radar">${radarSvg()}</div>
+      <div class="ds-grid">${orderedAreas().map((a, i) => {
+        const done = !!state.disciplines.log[(() => { const d = new Date(); d.setDate(d.getDate() - ((d.getDay() - a.day + 7) % 7)); return dayKey(d); })()];
+        const isT = a.day === todayDow;
+        return `<button type="button" class="ds-card ${isT ? "now" : ""} ${done ? "done" : ""}" data-action="open-area" data-id="${a.id}">
+          <span class="ds-hex">${iconHtml(ICONS[a.icon] ? a.icon : iconFor(a, state.disciplines.areas.indexOf(a)), 18)}</span>
+          <span class="ds-txt"><b>${esc(a.name)}</b><small>${DAY_NAMES[a.day].slice(0, 3)}${isT ? " · Today" : ""}${done ? " · ✓" : ""}</small></span>
+          <span class="ds-pts"><b>${pts[a.id]}</b><i>${esc(a.stat)}</i></span>
+        </button>`;
+      }).join("")}</div>
+    </div>
+  </section>`;
+}
+
 function statusWindow() {
   const xp = totalXP(), lvl = levelFor(xp), into = xp % XP_PER_LEVEL;
   const logged = state.days.includes(today());
@@ -539,10 +562,6 @@ function statusWindow() {
       <div class="tile"><b>${o.quests}</b><span>Quests cleared</span></div>
       <div class="tile"><b>${o.skills}</b><span>Skills cleared</span></div>
     </div>
-    <div class="ov-radar">
-      ${radarSvg()}
-      <p class="ov-hint">Tap a stat to open its log · <button type="button" class="linklike" data-action="journal">Open journal →</button></p>
-    </div>
     <div class="daily">
       <p>Daily quest: one 45-minute focus block, phone in another room.</p>
       <button class="btn" type="button" data-action="daily" ${logged ? "disabled" : ""}>${logged ? "Today's block logged" : "Log today's block"}</button>
@@ -555,6 +574,7 @@ function homeView() {
   <div class="topbar"><h1>Skill Tree</h1><div class="btnrow">${syncPill()}<button class="iconbtn" data-action="settings" type="button">Settings</button></div></div>
   ${statusWindow()}
   ${todayCard()}
+  ${disciplinesSection()}
   <div class="trees">
     ${state.trees.map((t, ti) => {
       const s = treeStats(t), [r] = rankFor(t);
