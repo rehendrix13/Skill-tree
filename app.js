@@ -293,6 +293,14 @@ function openModal({ title, text, fields = [], confirm = "Save", danger = false,
 }
 function closeModal() { document.getElementById("modal").innerHTML = ""; modalSubmit = null; ui.sheet = null; }
 document.addEventListener("submit", (e) => {
+  if (e.target.dataset?.areaNote) {
+    e.preventDefault();
+    const a = state.disciplines.areas.find((x) => x.id === e.target.dataset.areaNote);
+    const text = (e.target.elements.note.value || "").trim();
+    if (!a || !text) return;
+    (a.notes ||= []).push({ id: uid(), text, at: Date.now() });
+    save(); render(); toast("Added to journal"); return;
+  }
   if (e.target.dataset?.discNote) {
     e.preventDefault();
     const entry = state.disciplines.log[today()]; if (!entry) return;
@@ -319,7 +327,7 @@ document.addEventListener("submit", (e) => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { closeModal(); return; }
-  if ((e.key === "Enter" || e.key === " ") && e.target.matches?.("g[data-action]")) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent("click", { bubbles: true })); }
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches?.("g[data-action], [role=button][data-action]:not(button)")) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent("click", { bubbles: true })); }
 });
 
 /* ---------- views ---------- */
@@ -353,7 +361,7 @@ function weekStrip() {
   return `<div class="week">${Array.from({ length: 7 }, (_, i) => {
     const d = new Date(monday); d.setDate(monday.getDate() + i);
     const a = areaForDay(d.getDay()), key = dayKey(d), done = !!state.disciplines.log[key], isT = key === today(), past = d < now && !isT;
-    return `<span class="wk ${done ? "done" : ""} ${isT ? "today" : ""} ${past && !done ? "missed" : ""}" title="${DAY_NAMES[d.getDay()]}: ${esc(a?.name || "")}">
+    return `<span class="wk ${done ? "done" : ""} ${isT ? "today" : ""} ${past && !done ? "missed" : ""}" title="${DAY_NAMES[d.getDay()]}: ${esc(a?.name || "")}" ${a ? `data-action="open-area" data-id="${a.id}" role="button" tabindex="0"` : ""}>
       <svg viewBox="0 0 40 44" aria-hidden="true"><polygon points="${hexPts(20, 22, 18)}"/><text x="20" y="26" text-anchor="middle">${esc((a?.stat || "").slice(0, 3))}</text></svg>
       <small>${DAY_NAMES[d.getDay()].slice(0, 3)}</small></span>`;
   }).join("")}</div>`;
@@ -365,9 +373,9 @@ function disciplineCard() {
   const done = !!entry, pts = statPoints()[area.id];
   return `
   <section class="disc ${done ? "done" : ""}" aria-label="Daily discipline">
-    <div class="disc-head">
+    <div class="disc-head" data-action="open-area" data-id="${area.id}" role="button" tabindex="0" title="Open ${esc(area.name)} log">
       <span class="disc-hex">${iconHtml(ICONS[area.icon] ? area.icon : iconFor(area, ai), 24)}</span>
-      <div><div class="sys-label">Daily Discipline · ${DAY_NAMES[new Date().getDay()]}</div><h2>${esc(area.name)} <span class="disc-stat">${esc(area.stat)} ${pts}</span></h2></div>
+      <div style="flex:1"><div class="sys-label">Daily Discipline · ${DAY_NAMES[new Date().getDay()]}</div><h2>${esc(area.name)} <span class="disc-stat">${esc(area.stat)} ${pts}</span></h2></div><span class="go-arrow" aria-hidden="true">›</span>
     </div>
     <p class="disc-task">${esc(done ? entry.text : text)}</p>
     <div class="btnrow">
@@ -384,22 +392,159 @@ function disciplineCard() {
   </section>`;
 }
 
+/* ---------- overview: progress & stats at a glance ---------- */
+const TITLES = [[50, "Legend"], [35, "Master"], [20, "Expert"], [10, "Adept"], [5, "Apprentice"], [1, "Novice"]];
+const titleFor = (lvl) => TITLES.find(([min]) => lvl >= min)[1];
+function overviewStats() {
+  const weekAgo = Date.now() - 7 * 86400000, active = new Set(state.days);
+  let quests = 0, skills = 0, weekXP = 0;
+  state.trees.forEach((t) => {
+    t.branches.forEach((b) => b.nodes.forEach((n) => {
+      if (nodeDone(n)) skills++;
+      n.quests.forEach((q) => {
+        if (!q.done) return; quests++;
+        if (q.completedAt) { active.add(dayKey(new Date(q.completedAt))); if (q.completedAt >= weekAgo) weekXP += RANK_XP[n.rank]; }
+      });
+    }));
+    if (t.capstone.done) quests++;
+  });
+  Object.entries(state.disciplines.log).forEach(([k, e]) => { active.add(k); if (e.at >= weekAgo) weekXP += DISC_XP; });
+  const monday = new Date(); monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+  let weekDisc = 0;
+  for (let i = 0; i < 7; i++) { const d = new Date(monday); d.setDate(monday.getDate() + i); if (state.disciplines.log[dayKey(d)]) weekDisc++; }
+  return { quests, skills, weekXP, active: active.size, weekDisc };
+}
+function radarSvg() {
+  const areas = orderedAreas(), pts = statPoints(), n = areas.length;
+  if (!n) return "";
+  const W = 300, H = 250, cx = W / 2, cy = H / 2 + 4, R = 82;
+  const max = Math.max(5, ...areas.map((a) => pts[a.id]));
+  const at = (i, r) => { const a = (-90 + (i * 360) / n) * Math.PI / 180; return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; };
+  const poly = (f) => areas.map((_, i) => at(i, f(i)).map((v) => v.toFixed(1)).join(",")).join(" ");
+  const grid = [1 / 3, 2 / 3, 1].map((k) => `<polygon class="rd-grid" points="${poly(() => R * k)}"/>`).join("");
+  const spokes = areas.map((_, i) => { const [x, y] = at(i, R); return `<line class="rd-spoke" x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}"/>`; }).join("");
+  const val = poly((i) => Math.max(4, (pts[areas[i].id] / max) * R));
+  const dots = areas.map((a, i) => { const [x, y] = at(i, Math.max(4, (pts[a.id] / max) * R)); return `<circle class="rd-dot" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3"/>`; }).join("");
+  const todayArea = areaForDay(new Date().getDay());
+  const labels = areas.map((a, i) => {
+    const [x, y] = at(i, R + 26);
+    return `<g class="rd-lab ${a === todayArea ? "now" : ""}" data-action="open-area" data-id="${a.id}" tabindex="0" role="button" aria-label="${esc(a.name)}: ${pts[a.id]} points">
+      <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="21" class="rd-hit"/>
+      <text x="${x.toFixed(1)}" y="${(y - 2).toFixed(1)}" text-anchor="middle" class="rd-name">${esc(a.stat)}</text>
+      <text x="${x.toFixed(1)}" y="${(y + 13).toFixed(1)}" text-anchor="middle" class="rd-val">${pts[a.id]}</text></g>`;
+  }).join("");
+  return `<svg class="radar" viewBox="0 0 ${W} ${H}" role="img" aria-label="Stat radar">${grid}${spokes}<polygon class="rd-val-poly" points="${val}"/>${dots}${labels}</svg>`;
+}
+/* ---------- discipline area page ---------- */
+function areaEntries(a) {
+  const out = [];
+  Object.entries(state.disciplines.log).forEach(([k, e]) => { if (e.areaId === a.id) out.push({ kind: "done", at: e.at || new Date(k).getTime(), key: k, text: e.text, note: e.note }); });
+  (a.notes || []).forEach((n) => out.push({ kind: "note", at: n.at, id: n.id, text: n.text }));
+  return out.sort((x, y) => y.at - x.at);
+}
+function entryHtml(e, opts = {}) {
+  const when = fmtDate(e.at) + (opts.time ? ` · ${new Date(e.at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}` : "");
+  if (e.kind === "done") return `
+    <li class="j-entry done"><div class="j-top"><span class="j-kind">${opts.label || "Completed"}</span><time>${when}</time></div>
+      <p class="j-task">${esc(e.text)}</p>${e.note ? `<p class="j-note">${esc(e.note)}</p>` : ""}</li>`;
+  if (e.kind === "qnote") return `
+    <li class="j-entry qnote"><div class="j-top"><span class="j-kind">${esc(opts.label || "Quest note")}</span><time>${when}</time></div>
+      <p class="j-ctx">${esc(e.ctx)}</p><p class="j-note">${esc(e.text)}</p></li>`;
+  return `
+    <li class="j-entry jnote"><div class="j-top"><span class="j-kind">${opts.label || "Note"}</span><time>${when}</time>
+      ${opts.noDelete ? "" : `<button type="button" class="note-del ${ui.pendingDel === e.id ? "arm" : ""}" data-action="del-area-note" data-id="${opts.areaId}" data-note="${e.id}" aria-label="Delete note">${ui.pendingDel === e.id ? "Delete?" : "✕"}</button>`}</div>
+      <p class="j-note">${esc(e.text)}</p></li>`;
+}
+function areaView(a) {
+  const ai = state.disciplines.areas.indexOf(a), pts = statPoints()[a.id];
+  const entries = areaEntries(a), done = entries.filter((e) => e.kind === "done");
+  const isToday = a.day === new Date().getDay();
+  const nextTask = (() => { const d = new Date(); d.setDate(d.getDate() + ((a.day - d.getDay() + 7) % 7)); const idx = (state.disciplines.swaps[dayKey(d)] ?? weekIdx(d)) % Math.max(a.tasks.length, 1); return a.tasks[idx]; })();
+  return `
+  <div class="topbar"><button class="iconbtn" type="button" data-action="${ui.areaBack || "home"}">← Back</button><div class="btnrow">${syncPill()}<button class="iconbtn" type="button" data-action="edit-area" data-id="${a.id}">Edit</button></div></div>
+  <header class="area-head">
+    <span class="disc-hex">${iconHtml(ICONS[a.icon] ? a.icon : iconFor(a, ai), 26)}</span>
+    <div><div class="sys-label" style="color:var(--gold)">${DAY_NAMES[a.day]}s</div><h1>${esc(a.name)}</h1></div>
+    <div class="area-pts"><b>${pts}</b><span>${esc(a.stat)}</span></div>
+  </header>
+  <div class="tiles three">
+    <div class="tile"><b>${done.length}</b><span>Times completed</span></div>
+    <div class="tile"><b>${done.filter((e) => e.note).length + entries.filter((e) => e.kind === "note").length}</b><span>Notes &amp; reflections</span></div>
+    <div class="tile"><b>${done.length * DISC_XP}</b><span>XP earned</span></div>
+  </div>
+  ${isToday ? disciplineCard() : `<section class="card"><div class="sys-label" style="color:var(--gold)">Next ${DAY_NAMES[a.day]}</div><p style="color:var(--text);font-size:15px">${esc(nextTask || "No tasks yet")}</p></section>`}
+  <section class="card">
+    <h2>Journal</h2>
+    <p>Thoughts, wins, things to chew on later. Only you can see these.</p>
+    <form class="note-form" data-area-note="${a.id}">
+      <label class="sr" for="an-${a.id}">New ${esc(a.name)} note</label>
+      <textarea id="an-${a.id}" name="note" rows="3" placeholder="What's on your mind about ${esc(a.name.toLowerCase())}?"></textarea>
+      <button class="btn" type="submit">Add to journal</button>
+    </form>
+    ${entries.length ? `<ul class="j-list">${entries.map((e) => entryHtml(e, { areaId: a.id })).join("")}</ul>` : `<p class="t-empty">Nothing yet. Complete a ${esc(a.name)} task or add a note to start your log.</p>`}
+  </section>
+  <section class="card">
+    <h2>Task rotation</h2>
+    <ol class="task-rot">${a.tasks.map((t) => `<li>${esc(t)}</li>`).join("")}</ol>
+    <button class="btn ghost" type="button" data-action="edit-area" data-id="${a.id}">Edit tasks</button>
+  </section>`;
+}
+
+/* ---------- journal: every note and reflection in one timeline ---------- */
+function journalEntries() {
+  const out = [];
+  state.disciplines.areas.forEach((a) => areaEntries(a).forEach((e) => out.push({ ...e, filter: a.id, label: `${a.stat} · ${e.kind === "done" ? "Completed" : "Note"}`, areaId: a.id })));
+  state.trees.forEach((t) => t.branches.forEach((b) => b.nodes.forEach((n) => n.quests.forEach((q) => (q.notes || []).forEach((nt) =>
+    out.push({ kind: "qnote", at: nt.at, text: nt.text, ctx: `${n.name}: ${q.text}`, filter: "quests", label: `${t.name}` }))))));
+  return out.sort((x, y) => y.at - x.at);
+}
+function journalView() {
+  const f = ui.jFilter || "all";
+  const all = journalEntries();
+  const list = all.filter((e) => f === "all" || e.filter === f || (f === "notes" && e.kind !== "done") || (f === "reflections" && e.kind === "done" && e.note));
+  const chips = [["all", "All"], ["reflections", "Reflections"], ["notes", "Notes"], ...orderedAreas().map((a) => [a.id, a.stat]), ["quests", "Quests"]];
+  let lastDay = "";
+  const items = list.map((e) => {
+    const dk = dayKey(new Date(e.at));
+    const head = dk !== lastDay ? `<li class="j-day">${new Date(e.at).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: new Date(e.at).getFullYear() !== new Date().getFullYear() ? "numeric" : undefined })}</li>` : "";
+    lastDay = dk;
+    return head + entryHtml(e, { label: e.label, areaId: e.areaId, time: true, noDelete: true });
+  }).join("");
+  return `
+  <div class="topbar"><button class="iconbtn" type="button" data-action="home">← Home</button><div class="btnrow">${syncPill()}</div></div>
+  <header class="tree-head"><div class="sys-label">Journal</div><h1 style="font-size:24px;color:#fff;margin-top:4px">Your log</h1><p>${all.length} entr${all.length === 1 ? "y" : "ies"} across disciplines and quests</p></header>
+  <div class="chips">${chips.map(([k, l]) => `<button type="button" class="chip-f ${f === k ? "on" : ""}" data-action="jfilter" data-id="${k}">${esc(l)}</button>`).join("")}</div>
+  ${list.length ? `<ul class="j-list">${items}</ul>` : `<p class="t-empty">No entries here yet. Add notes from a discipline's page, a quest, or your daily reflection.</p>`}`;
+}
+
 function statusWindow() {
   const xp = totalXP(), lvl = levelFor(xp), into = xp % XP_PER_LEVEL;
   const logged = state.days.includes(today());
-  const quests = state.trees.reduce((a, t) => a + treeStats(t).done, 0);
+  const o = overviewStats();
   return `
-  <section class="window" aria-label="Player status">
-    <div class="sys-label">Status</div>
-    <div class="status">
+  <section class="window overview" aria-label="Player overview">
+    <div class="ov-top">
       <div class="lvl"><div class="t">LEVEL</div><div class="n">${lvl}</div></div>
-      <div class="title">Player<small>${state.trees.length} skill tree${state.trees.length === 1 ? "" : "s"} · ${quests} quests cleared</small></div>
-      <div class="bar" aria-hidden="true"><i style="width:${(into / XP_PER_LEVEL) * 100}%"></i></div>
-      <div class="meta"><span>${xp} XP total</span><span>${XP_PER_LEVEL - into} XP to Lv ${lvl + 1}</span></div>
+      <div class="ov-id">
+        <div class="sys-label">Status</div>
+        <div class="title">${titleFor(lvl)}<small>${xp} XP total · ${XP_PER_LEVEL - into} XP to Lv ${lvl + 1}</small></div>
+        <div class="bar" aria-hidden="true"><i style="width:${(into / XP_PER_LEVEL) * 100}%"></i></div>
+      </div>
     </div>
-    ${statGrid()}
+    <div class="tiles">
+      <div class="tile"><b>${streak()}</b><span>Focus streak</span></div>
+      <div class="tile"><b>${discStreak()}</b><span>Discipline streak</span></div>
+      <div class="tile"><b>${o.weekDisc}<small>/7</small></b><span>Disciplines this week</span></div>
+      <div class="tile"><b>+${o.weekXP}</b><span>XP last 7 days</span></div>
+      <div class="tile"><b>${o.quests}</b><span>Quests cleared</span></div>
+      <div class="tile"><b>${o.skills}</b><span>Skills cleared</span></div>
+    </div>
+    <div class="ov-radar">
+      ${radarSvg()}
+      <p class="ov-hint">Tap a stat to open its log · <button type="button" class="linklike" data-action="journal">Open journal →</button></p>
+    </div>
     <div class="daily">
-      <p>Daily quest: one 45-minute focus block, phone in another room.<br>Streak: <b>${streak()}</b> day${streak() === 1 ? "" : "s"}</p>
+      <p>Daily quest: one 45-minute focus block, phone in another room.</p>
       <button class="btn" type="button" data-action="daily" ${logged ? "disabled" : ""}>${logged ? "Today's block logged" : "Log today's block"}</button>
     </div>
   </section>`;
@@ -905,7 +1050,7 @@ function settingsView() {
     <p>Erases all trees, progress, and your streak${session ? " on every synced device" : " on this device"}.</p>
     <div class="btnrow"><button class="btn danger" type="button" data-action="reset">Reset all data</button></div>
   </section>
-  <p class="foot">Skill Tree v1.5</p>`;
+  <p class="foot">Skill Tree v1.6</p>`;
 }
 
 function render() {
@@ -913,7 +1058,7 @@ function render() {
   if (ui.view === "tree" && !getTree(ui.treeId)) ui.view = "home";
   const oldWrap = document.getElementById("map-wrap");
   const keep = oldWrap && !ui.recenter ? { l: oldWrap.scrollLeft, t: oldWrap.scrollTop } : null;
-  app.innerHTML = ui.view === "tree" ? treeView(getTree(ui.treeId)) : ui.view === "settings" ? settingsView() : ui.view === "today" ? todayView() : homeView();
+  app.innerHTML = ui.view === "tree" ? treeView(getTree(ui.treeId)) : ui.view === "settings" ? settingsView() : ui.view === "today" ? todayView() : ui.view === "area" && state.disciplines.areas.find((a) => a.id === ui.areaId) ? areaView(state.disciplines.areas.find((a) => a.id === ui.areaId)) : ui.view === "journal" ? journalView() : homeView();
   app.classList.toggle("wide", !!document.getElementById("map-wrap"));
   const wrap = document.getElementById("map-wrap");
   if (wrap) {
@@ -988,6 +1133,16 @@ document.addEventListener("click", (e) => {
       const after = levelFor(totalXP());
       if (after > before) setTimeout(() => toast(`LEVEL UP! You are now Level ${after}`), 1000);
       break;
+    }
+    case "open-area": ui.areaBack = ui.view === "today" ? "today" : ui.view === "journal" ? "journal" : "home"; ui.view = "area"; ui.areaId = id; ui.pendingDel = null; window.scrollTo(0, 0); break;
+    case "journal": ui.view = "journal"; window.scrollTo(0, 0); break;
+    case "jfilter": ui.jFilter = id; break;
+    case "del-area-note": {
+      const nid = el.dataset.note;
+      if (ui.pendingDel !== nid) { ui.pendingDel = nid; render(); setTimeout(() => { if (ui.pendingDel === nid) { ui.pendingDel = null; render(); } }, 3000); return; }
+      const a = state.disciplines.areas.find((x) => x.id === id);
+      if (a) a.notes = (a.notes || []).filter((n) => n.id !== nid);
+      ui.pendingDel = null; break;
     }
     case "disc-undo": delete state.disciplines.log[today()]; break;
     case "disc-swap": { const d = discFor(); if (!d || d.entry) return; state.disciplines.swaps = { [d.key]: (d.idx + 1) % d.area.tasks.length }; break; }
