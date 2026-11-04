@@ -72,12 +72,13 @@ const DEFAULT_DISC = [
 ];
 const seedDisciplines = () => ({ areas: DEFAULT_DISC.map(([day, name, stat, icon, tasks]) => ({ id: uid(), day, name, stat, icon, tasks: [...tasks] })), log: {}, swaps: {} });
 
-function freshState() { return { version: 1, trees: [seedPO()], days: [], updatedAt: 0, disciplines: seedDisciplines(), sideQuests: [] }; }
+function freshState() { return { version: 1, trees: [seedPO()], days: [], updatedAt: 0, disciplines: seedDisciplines(), sideQuests: [], events: [] }; }
 function normalize(s) {
   const out = { version: 1, days: [], updatedAt: 0, ...s, trees: Array.isArray(s.trees) ? s.trees : [] };
   if (!out.disciplines || !Array.isArray(out.disciplines.areas)) out.disciplines = seedDisciplines();
   out.disciplines.log ||= {}; out.disciplines.swaps ||= {};
   if (!Array.isArray(out.sideQuests)) out.sideQuests = [];
+  if (!Array.isArray(out.events)) out.events = [];
   return out;
 }
 function load() {
@@ -234,7 +235,7 @@ function treeStats(t) {
   if (t.capstone.text) { total++; max += CAPSTONE_XP; if (t.capstone.done) { done++; xp += CAPSTONE_XP; } }
   return { xp, max, done, total, pct: max ? xp / max : 0 };
 }
-const totalXP = () => Math.max(0, state.trees.reduce((a, t) => a + treeStats(t).xp, 0) + Object.keys(state.disciplines?.log || {}).length * DISC_XP + sideXPNet());
+const totalXP = () => Math.max(0, state.trees.reduce((a, t) => a + treeStats(t).xp, 0) + Object.keys(state.disciplines?.log || {}).length * DISC_XP + sideXPNet() + eventXP());
 const levelFor = (xp) => 1 + Math.floor(xp / XP_PER_LEVEL);
 function rankFor(t) {
   const { pct } = treeStats(t);
@@ -458,6 +459,168 @@ function sideSheetHtml(q) {
       ${q.repeat && !q.done ? `<button class="btn ghost" type="button" data-action="side-skip" data-id="${q.id}">Skip this one</button>` : ""}
       <button class="btn danger" type="button" data-action="side-del" data-id="${q.id}">Delete</button>
     </div>`;
+}
+
+/* ---------- events: meetings (3 XP) and time blocks on the day timeline ---------- */
+const MEETING_XP = 3;
+const EV_COLORS = [["#4fc3ff", "Blue"], ["#5ee6a8", "Green"], ["#f2c14e", "Gold"], ["#c58bff", "Purple"], ["#ff8fb1", "Pink"], ["#ff8a65", "Coral"], ["#9fb0d6", "Slate"]];
+const EV_TYPES = [["meeting", "Meeting · 3 XP"], ["block0", "Time block · no XP"], ["block3", "Time block · 3 XP"], ["block5", "Time block · 5 XP"], ["block10", "Time block · 10 XP"]];
+const evType = (e) => (e.kind === "meeting" ? "meeting" : `block${e.xp || 0}`);
+const evXP = (e) => (e.kind === "meeting" ? MEETING_XP : e.xp || 0);
+const keyToUTC = (k) => { const [y, m, d] = k.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+const toMin = (hhmm) => { const [h, m] = (hhmm || "0:0").split(":").map(Number); return h * 60 + m; };
+function occursOn(e, k) {
+  if (k < e.date || (e.skips || []).includes(k)) return false;
+  if (!e.repeat) return k === e.date;
+  const a = keyToUTC(e.date), b = keyToUTC(k), dow = new Date(b).getUTCDay(), diff = Math.round((b - a) / DAY_MS);
+  if (e.repeat === "daily") return true;
+  if (e.repeat === "weekdays") return dow >= 1 && dow <= 5;
+  if (e.repeat === "weekly") return diff % 7 === 0;
+  if (e.repeat === "biweekly") return diff % 14 === 0;
+  if (e.repeat === "monthly") return new Date(a).getUTCDate() === new Date(b).getUTCDate();
+  return false;
+}
+const eventsOn = (k) => (state.events || []).filter((e) => occursOn(e, k)).sort((x, y) => toMin(x.start) - toMin(y.start));
+const eventXP = () => (state.events || []).reduce((a, e) => a + Object.keys(e.done || {}).length * evXP(e), 0);
+const evStartMs = (e, k) => new Date(`${k}T${e.start}`).getTime();
+const evStarted = (e, k) => Date.now() >= evStartMs(e, k);
+const fmtHM = (hhmm) => { const [h, m] = hhmm.split(":").map(Number); const d = new Date(); d.setHours(h, m, 0, 0); return timeStr(d.getTime()); };
+const durLabel = (min) => { const h = Math.floor(min / 60), m = min % 60; return h && m ? `${h}h ${m}m` : h ? `${h}h` : `${m}m`; };
+function toggleEvent(e, k, on) {
+  e.done ||= {};
+  if (on) {
+    if (!evStarted(e, k)) { toast(`You can check this off once it starts at ${fmtHM(e.start)}`); return false; }
+    const before = levelFor(totalXP());
+    e.done[k] = Date.now();
+    const xp = evXP(e); toast(xp ? `${e.kind === "meeting" ? "Meeting" : "Block"} complete · +${xp} XP` : "Done");
+    const after = levelFor(totalXP());
+    if (after > before) setTimeout(() => toast(`LEVEL UP! You are now Level ${after}`), 1200);
+  } else delete e.done[k];
+  return true;
+}
+function openEventForm(e, presetDate, presetStart) {
+  const st = e ? e.start : presetStart || (() => { const d = new Date(); d.setMinutes(d.getMinutes() < 30 ? 30 : 60, 0, 0); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; })();
+  const en = e ? e.end : (() => { const m = Math.min(toMin(st) + 30, 23 * 60 + 59); return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`; })();
+  openModal({
+    title: e ? "Edit event" : "New event", text: e && e.repeat ? "Changes apply to every occurrence." : "Meetings earn 3 XP once they start and you check them off. Missed meetings earn nothing.",
+    fields: [
+      { id: "title", label: "Title", value: e?.title || "", required: true, placeholder: "e.g. MDH Daily Standup" },
+      { id: "type", label: "Type", type: "select", value: e ? evType(e) : "meeting", options: EV_TYPES.map(([v, l]) => ({ value: v, label: l })) },
+      { id: "date", label: e && e.repeat ? "Starts on" : "Date", type: "date", value: e?.date || presetDate || today() },
+      { id: "start", label: "Start", type: "time", value: st },
+      { id: "end", label: "End", type: "time", value: en },
+      { id: "repeat", label: "Repeat", type: "select", value: e?.repeat || "", options: REPEATS.map(([v, l]) => ({ value: v, label: l })) },
+      { id: "icon", label: "Icon", type: "select", value: e?.icon || "", options: iconOptions() },
+      { id: "color", label: "Color", type: "select", value: e?.color || EV_COLORS[0][0], options: EV_COLORS.map(([v, l]) => ({ value: v, label: l })) },
+    ],
+    confirm: e ? "Save" : "Add event",
+    onSubmit: (v) => {
+      if (!v.title || !v.date || !v.start) return;
+      if (!v.end || toMin(v.end) <= toMin(v.start)) { const m = Math.min(toMin(v.start) + 30, 23 * 60 + 59); v.end = `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`; }
+      const kind = v.type === "meeting" ? "meeting" : "block", xp = kind === "block" ? Number(v.type.replace("block", "")) || 0 : MEETING_XP;
+      const data = { title: v.title, kind, xp, date: v.date, start: v.start, end: v.end, repeat: v.repeat || "", icon: v.icon, color: v.color };
+      if (e) Object.assign(e, data);
+      else state.events.push({ id: uid(), ...data, skips: [], done: {}, createdAt: Date.now() });
+      ui.calDay = v.date; toast(e ? "Event updated" : `Added · ${fmtHM(v.start)}`);
+    },
+  });
+}
+function eventSheetHtml(e, k) {
+  const done = !!(e.done || {})[k], started = evStarted(e, k), xp = evXP(e);
+  const rep = REPEATS.find(([v]) => v === (e.repeat || ""))[1];
+  const ic = ICONS[e.icon] ? e.icon : e.kind === "meeting" ? "monitor" : "clock";
+  return `
+    <div class="sheet-head"><span class="ev-dot" style="--ec:${esc(e.color || "#4fc3ff")}">${iconHtml(ic, 22)}</span>
+      <div><div class="sys-label" style="color:${esc(e.color || "#4fc3ff")}">${e.kind === "meeting" ? "Meeting" : "Time block"}</div><h2>${esc(e.title)}</h2></div></div>
+    <div class="chiprow"><span class="state ${done ? "done" : "open"}">${done ? `Done${xp ? ` · +${xp} XP` : ""}` : xp ? `${xp} XP` : "No XP"}</span>${e.repeat ? `<span class="state open">↻ ${esc(rep)}</span>` : ""}</div>
+    <div class="sq-facts"><div><span>When</span><b>${fmtHM(e.start)} – ${fmtHM(e.end)}</b><small>${esc(new Date(`${k}T12:00`).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }))}</small></div>
+      <div><span>Length</span><b>${durLabel(toMin(e.end) - toMin(e.start))}</b><small>${e.kind === "meeting" ? "Alert 10 min before" : ""}</small></div></div>
+    ${!done && !started && xp ? `<p class="sheet-note">You can check this off once it starts.</p>` : ""}
+    <div class="btnrow">
+      ${done ? `<button class="btn ghost" type="button" data-action="ev-undo" data-id="${e.id}" data-day="${k}">Mark not done</button>`
+        : `<button class="btn" type="button" data-action="ev-done" data-id="${e.id}" data-day="${k}" ${started ? "" : "disabled"}>${started ? "Complete" : `Starts ${fmtHM(e.start)}`}</button>`}
+      <button class="btn ghost" type="button" data-action="ev-edit" data-id="${e.id}">Edit${e.repeat ? " series" : ""}</button>
+      ${e.repeat ? `<button class="btn ghost" type="button" data-action="ev-skip" data-id="${e.id}" data-day="${k}">Skip this day</button>` : ""}
+      <button class="btn danger" type="button" data-action="ev-del" data-id="${e.id}">Delete${e.repeat ? " series" : ""}</button>
+    </div>`;
+}
+
+/* timeline items for a day: events + side quests due that day */
+function dayItems(k) {
+  const items = eventsOn(k).map((e) => ({ kind: "event", e, s: toMin(e.start), en: Math.max(toMin(e.end), toMin(e.start) + 15) }));
+  (state.sideQuests || []).filter((q) => dayKey(new Date(q.dueAt)) === k).forEach((q) => {
+    const d = new Date(q.dueAt), m = d.getHours() * 60 + d.getMinutes();
+    items.push({ kind: "side", q, s: m, en: m });
+  });
+  return items.sort((a, b) => a.s - b.s || a.en - b.en);
+}
+function weekStripCal(sel) {
+  const d0 = new Date(`${sel}T12:00`); d0.setDate(d0.getDate() - d0.getDay());
+  return `<div class="wk-strip">
+    <button type="button" class="iconbtn wk-nav" data-action="cal-week" data-dir="-1" aria-label="Previous week">‹</button>
+    ${Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(d0); d.setDate(d0.getDate() + i); const k = dayKey(d);
+      const dots = dayItems(k).slice(0, 4).map((it) => `<i style="background:${it.kind === "side" ? (isOverdue(it.q) ? "var(--danger)" : "var(--gold)") : esc(it.e.color || "#4fc3ff")}"></i>`).join("");
+      return `<button type="button" class="wk-day ${k === sel ? "sel" : ""} ${k === today() ? "today" : ""}" data-action="cal-day" data-id="${k}">
+        <small>${DAY_NAMES[d.getDay()].slice(0, 3)}</small><b>${d.getDate()}</b><span class="wk-dots">${dots}</span></button>`;
+    }).join("")}
+    <button type="button" class="iconbtn wk-nav" data-action="cal-week" data-dir="1" aria-label="Next week">›</button>
+  </div>`;
+}
+function timelineHtml(k) {
+  const items = dayItems(k), isT = k === today(), n = new Date(), nowM = n.getHours() * 60 + n.getMinutes();
+  const hm = (m) => { const d = new Date(); d.setHours(Math.floor(m / 60), m % 60, 0, 0); return timeStr(d.getTime()); };
+  const hhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  const rows = []; let cursor = items.length ? Math.min(items[0].s, isT ? nowM : 24 * 60) : (isT ? nowM : 8 * 60), nowDone = !isT;
+  const gap = (from, to) => {
+    if (!nowDone && nowM >= from && nowM < to) {
+      if (nowM > from + 5) gap2(from, nowM);
+      rows.push(`<div class="tl-now"><span>${hm(nowM)}</span><i></i></div>`); nowDone = true; from = nowM;
+    }
+    gap2(from, to);
+  };
+  const gap2 = (from, to) => {
+    if (to - from < 15) return;
+    rows.push(`<div class="tl-gap"><span class="tl-t"></span><div class="tl-gap-body"><span>${to >= 24 * 60 ? "" : `${durLabel(to - from)} free`}</span><button type="button" class="tool" data-action="ev-new-at" data-id="${k}" data-start="${hhmm(from)}">+ Add</button></div></div>`);
+  };
+  items.forEach((it) => {
+    if (it.s > cursor) gap(cursor, it.s);
+    if (!nowDone && nowM <= it.s && it.s - nowM < 15) { rows.push(`<div class="tl-now"><span>${hm(nowM)}</span><i></i></div>`); nowDone = true; }
+    if (it.kind === "event") {
+      const e = it.e, done = !!(e.done || {})[k], len = it.en - it.s, h = Math.max(62, Math.min(220, len * 1.5));
+      const past = k < today();
+      const ic = ICONS[e.icon] ? e.icon : e.kind === "meeting" ? "monitor" : "clock";
+      rows.push(`<div class="tl-item ${done ? "done" : ""} ${past && !done && evXP(e) ? "missed" : ""}" style="--ec:${esc(e.color || "#4fc3ff")}">
+        <span class="tl-t">${hm(it.s)}</span>
+        <button type="button" class="tl-pill" style="height:${h}px" data-action="sheet-ev" data-id="${e.id}" data-day="${k}" aria-label="${esc(e.title)}">${iconHtml(ic, 22)}</button>
+        <button type="button" class="tl-info" data-action="sheet-ev" data-id="${e.id}" data-day="${k}">
+          <small>${fmtHM(e.start)} – ${fmtHM(e.end)} (${durLabel(len)})${e.repeat ? " ↻" : ""}</small>
+          <b>${esc(e.title)}</b>
+          <em>${evXP(e) ? (done ? `+${evXP(e)} XP` : past ? "Missed · 0 XP" : `${evXP(e)} XP`) : ""}</em>
+        </button>
+        <label class="tl-check" for="ev-${e.id}-${k}"><input type="checkbox" id="ev-${e.id}-${k}" data-ev="${e.id}" data-day="${k}" ${done ? "checked" : ""} aria-label="Complete ${esc(e.title)}"></label>
+      </div>`);
+    } else {
+      const q = it.q, st = sideStatus(q);
+      rows.push(`<div class="tl-item side ${st.cls}">
+        <span class="tl-t">${hm(it.s)}</span>
+        <button type="button" class="tl-pill side-pill" data-action="sheet-side" data-id="${q.id}"><b>${q.rank}</b></button>
+        <button type="button" class="tl-info" data-action="sheet-side" data-id="${q.id}"><small>Side Quest due ${timeStr(q.dueAt)}</small><b>${esc(q.title)}</b><em>${esc(st.label)}</em></button>
+        <label class="tl-check" for="tls-${q.id}"><input type="checkbox" id="tls-${q.id}" data-side="${q.id}" ${q.done ? "checked" : ""}></label>
+      </div>`);
+    }
+    cursor = Math.max(cursor, it.en);
+  });
+  if (cursor < 24 * 60) gap(cursor, 24 * 60);
+  const total = items.filter((i) => i.kind === "event" && evXP(i.e)).length;
+  const done = items.filter((i) => i.kind === "event" && (i.e.done || {})[k] && evXP(i.e)).reduce((a, i) => a + evXP(i.e), 0);
+  return `<section class="tl">
+    <div class="tl-head"><div><h2>${esc(new Date(`${k}T12:00`).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }))}</h2>
+      <small>${items.length ? `${items.length} item${items.length === 1 ? "" : "s"}${total ? ` · +${done} XP earned` : ""}` : "Nothing scheduled"}</small></div>
+      <button type="button" class="btn" data-action="ev-new-at" data-id="${k}">+ Event</button></div>
+    ${items.length ? "" : `<p class="t-empty">Add your meetings and time blocks. Repeating ones only need to be set up once.</p>`}
+    <div class="tl-rows">${rows.join("")}</div>
+  </section>`;
 }
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -717,6 +880,16 @@ function journalSection() {
   </section>`;
 }
 function calendarView() {
+  const sel = ui.calDay || today(), mode = ui.calMode || "day";
+  return `
+  <div class="topbar"><h1>Calendar</h1><div class="btnrow">${syncPill()}
+    <div class="seg cal-seg" role="group" aria-label="View"><button type="button" class="${mode === "day" ? "on" : ""}" data-action="cal-mode" data-id="day">Day</button><button type="button" class="${mode === "month" ? "on" : ""}" data-action="cal-mode" data-id="month">Month</button></div></div></div>
+  <div class="cal-layout mode-${mode}">
+    <aside class="cal-side">${monthPanel()}</aside>
+    <div class="cal-main">${weekStripCal(sel)}${timelineHtml(sel)}</div>
+  </div>`;
+}
+function monthPanel() {
   const now = new Date();
   const ym = ui.calMonth || `${now.getFullYear()}-${now.getMonth()}`;
   const [Y, M] = ym.split("-").map(Number);
@@ -735,7 +908,7 @@ function calendarView() {
     const over = list.some((q) => isOverdue(q)), open = list.some((q) => !q.done && !isOverdue(q)), dn = list.some((q) => q.done);
     cells.push(`<button type="button" class="cal-cell ${k === today() ? "today" : ""} ${k === sel ? "sel" : ""}" data-action="cal-day" data-id="${k}">
       <span class="cal-n">${d}</span>
-      <span class="cal-dots">${over ? `<i class="d-over"></i>` : ""}${open ? `<i class="d-open"></i>` : ""}${dn ? `<i class="d-done"></i>` : ""}${disc ? `<i class="d-disc"></i>` : ""}${focus || qd ? `<i class="d-act"></i>` : ""}</span>
+      <span class="cal-dots">${eventsOn(k).length ? `<i class="d-ev"></i>` : ""}${over ? `<i class="d-over"></i>` : ""}${open ? `<i class="d-open"></i>` : ""}${dn ? `<i class="d-done"></i>` : ""}${disc ? `<i class="d-disc"></i>` : ""}${focus || qd ? `<i class="d-act"></i>` : ""}</span>
     </button>`);
   }
   const selDate = new Date(`${sel}T12:00:00`);
@@ -744,7 +917,6 @@ function calendarView() {
   const qdList = questDone[sel] || [];
   const monthName = first.toLocaleDateString(undefined, { month: "long", year: "numeric" });
   return `
-  <div class="topbar"><h1>Calendar</h1><div class="btnrow">${syncPill()}</div></div>
   <section class="cal">
     <div class="cal-head">
       <button type="button" class="iconbtn" data-action="cal-prev" aria-label="Previous month">‹</button>
@@ -753,10 +925,10 @@ function calendarView() {
     </div>
     <div class="cal-grid cal-dow">${["S", "M", "T", "W", "T", "F", "S"].map((x) => `<span>${x}</span>`).join("")}</div>
     <div class="cal-grid">${cells.join("")}</div>
-    <div class="cal-legend"><span><i class="d-open"></i>Due</span><span><i class="d-over"></i>Overdue</span><span><i class="d-done"></i>Done</span><span><i class="d-disc"></i>Discipline</span><span><i class="d-act"></i>Other activity</span></div>
+    <div class="cal-legend"><span><i class="d-ev"></i>Events</span><span><i class="d-open"></i>Due</span><span><i class="d-over"></i>Overdue</span><span><i class="d-done"></i>Done</span><span><i class="d-disc"></i>Discipline</span><span><i class="d-act"></i>Other activity</span></div>
   </section>
   <section class="t-section">
-    <h2 class="t-h"><span>${esc(selDate.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }))}</span><button type="button" class="tool" data-action="new-side-on" data-id="${sel}">+ Quest this day</button></h2>
+    <h2 class="t-h"><span>${esc(selDate.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }))}</span><span class="btnrow"><button type="button" class="tool" data-action="new-side-on" data-id="${sel}">+ Quest</button><button type="button" class="tool only-phone" data-action="cal-mode" data-id="day">Timeline →</button></span></h2>
     ${selList.length ? `<ul class="sq-list">${selList.map(sideItem).join("")}</ul>` : `<p class="t-empty">No side quests due this day.</p>`}
     ${discE ? `<div class="cal-act"><b style="color:var(--done)">${esc(discA ? discA.stat : discE.stat)}</b> ${esc(discE.text)}${discE.note ? `<p>${esc(discE.note)}</p>` : ""}</div>` : ""}
     ${state.days.includes(sel) ? `<div class="cal-act"><b style="color:var(--accent)">FOCUS</b> 45-minute focus block logged</div>` : ""}
@@ -815,6 +987,12 @@ const ICONS = {
   sun: ['Sun', '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'],
   calendar: ['Calendar', '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>'],
   tree: ['Tree', '<circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M12 7.5v5M12 12.5L6.5 17M12 12.5l5.5 4.5"/>'],
+  monitor: ['Meeting', '<rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>'],
+  car: ['Car', '<path d="M5 17h14M5 17v2M19 17v2M3 13l2-6h14l2 6v4H3z"/><circle cx="7.5" cy="14" r="1"/><circle cx="16.5" cy="14" r="1"/>'],
+  food: ['Meal', '<path d="M7 2v20M4 2v6a3 3 0 0 0 6 0V2M17 2c-2 0-3 3-3 7s1 5 3 5v8"/>'],
+  moon: ['Sleep', '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>'],
+  alarm: ['Alarm', '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M5 3L2 6M19 3l3 3"/>'],
+  paw: ['Pet', '<circle cx="5.5" cy="10" r="2"/><circle cx="9.5" cy="5.5" r="2"/><circle cx="14.5" cy="5.5" r="2"/><circle cx="18.5" cy="10" r="2"/><path d="M12 12c-3 0-5 3.5-5 6 0 1.5 1 2.5 2.5 2.5S11 20 12 20s1 .5 2.5.5S17 19.5 17 18c0-2.5-2-6-5-6z"/>'],
   plus: ['Plus', '<path d="M12 5v14M5 12h14"/>'],
   cap: ['Graduation', '<path d="M22 10L12 5 2 10l10 5 10-5zM6 12v5c3 2 9 2 12 0v-5"/>'],
 };
@@ -1149,6 +1327,12 @@ function sheetHtml(t) {
 function renderSheet() {
   const m = document.getElementById("modal");
   const t = getTree(ui.treeId);
+  if (ui.sheet && ui.sheet.type === "ev") {
+    const e = (state.events || []).find((x) => x.id === ui.sheet.id);
+    if (!e) { ui.sheet = null; m.innerHTML = ""; return; }
+    m.innerHTML = `<div class="sheet-bg" data-action="sheet-close"><section class="sheet" role="dialog" aria-modal="true"><div class="grab" aria-hidden="true"></div><button type="button" class="sheet-x" data-action="sheet-close" aria-label="Close">✕</button>${eventSheetHtml(e, ui.sheet.day)}</section></div>`;
+    return;
+  }
   if (ui.sheet && ui.sheet.type === "side") {
     const q = state.sideQuests.find((x) => x.id === ui.sheet.id);
     if (!q) { ui.sheet = null; m.innerHTML = ""; return; }
@@ -1296,7 +1480,7 @@ function settingsView() {
     <p>Erases all trees, progress, and your streak${session ? " on every synced device" : " on this device"}.</p>
     <div class="btnrow"><button class="btn danger" type="button" data-action="reset">Reset all data</button></div>
   </section>
-  <p class="foot">Skill Tree v1.8</p>`;
+  <p class="foot">Skill Tree v1.9</p>`;
 }
 
 function render() {
@@ -1305,7 +1489,7 @@ function render() {
   const oldWrap = document.getElementById("map-wrap");
   const keep = oldWrap && !ui.recenter ? { l: oldWrap.scrollLeft, t: oldWrap.scrollTop } : null;
   app.innerHTML = ui.view === "tree" ? treeView(getTree(ui.treeId)) : ui.view === "settings" ? settingsView() : ui.view === "today" ? todayView() : ui.view === "area" && state.disciplines.areas.find((a) => a.id === ui.areaId) ? areaView(state.disciplines.areas.find((a) => a.id === ui.areaId)) : ui.view === "journal" ? journalView() : ui.view === "calendar" ? calendarView() : ui.view === "trees" ? treesView() : homeView();
-  app.classList.toggle("wide", !!document.getElementById("map-wrap"));
+  app.classList.toggle("wide", !!document.getElementById("map-wrap") || ui.view === "calendar");
   const wrap = document.getElementById("map-wrap");
   if (wrap) {
     if (keep) { wrap.scrollLeft = keep.l; wrap.scrollTop = keep.t; }
@@ -1409,7 +1593,15 @@ document.addEventListener("click", (e) => {
       confirmDel(`"${q.title}"${q.repeat ? " (and stop repeating)" : ""}`, () => { state.sideQuests = state.sideQuests.filter((x) => x !== q); });
       return;
     }
-    case "cal-day": ui.calDay = id; break;
+    case "cal-day": ui.calDay = id; if (ui.calMode === "month" && !e.target.closest(".cal-side")) ui.calMode = "day"; break;
+    case "cal-mode": ui.calMode = id; break;
+    case "cal-week": { const d = new Date(`${ui.calDay || today()}T12:00`); d.setDate(d.getDate() + 7 * dir); ui.calDay = dayKey(d); ui.calMonth = `${d.getFullYear()}-${d.getMonth()}`; break; }
+    case "ev-new-at": openEventForm(null, id, el.dataset.start); return;
+    case "sheet-ev": ui.sheet = { type: "ev", id, day: el.dataset.day }; renderSheet(); return;
+    case "ev-done": case "ev-undo": { const ev = state.events.find((x) => x.id === id); if (!ev || !toggleEvent(ev, el.dataset.day, a === "ev-done")) return; break; }
+    case "ev-edit": { const ev = state.events.find((x) => x.id === id); if (ev) { ui.sheet = null; openEventForm(ev); } return; }
+    case "ev-skip": { const ev = state.events.find((x) => x.id === id); if (ev) { (ev.skips ||= []).push(el.dataset.day); ui.sheet = null; toast("Skipped for this day"); } break; }
+    case "ev-del": { const ev = state.events.find((x) => x.id === id); if (!ev) return; confirmDel(`"${ev.title}"${ev.repeat ? " and all its repeats" : ""}`, () => { state.events = state.events.filter((x) => x !== ev); }); return; }
     case "cal-prev": case "cal-next": {
       const now = new Date(); const [Y, M] = (ui.calMonth || `${now.getFullYear()}-${now.getMonth()}`).split("-").map(Number);
       const d = new Date(Y, M + (a === "cal-next" ? 1 : -1), 1); ui.calMonth = `${d.getFullYear()}-${d.getMonth()}`; break;
@@ -1607,6 +1799,11 @@ document.addEventListener("change", (e) => {
     el.files[0].text().then(importData); return;
   }
   if (el.dataset.quest) return onQuestToggle(el.dataset.quest, el.checked);
+  if (el.dataset.ev) {
+    const ev = state.events.find((x) => x.id === el.dataset.ev);
+    if (ev && toggleEvent(ev, el.dataset.day, el.checked)) save(); else el.checked = !el.checked;
+    render(); return;
+  }
   if (el.dataset.side) {
     const q = state.sideQuests.find((x) => x.id === el.dataset.side);
     if (q) { el.checked ? completeSide(q) : uncompleteSide(q); save(); render(); }

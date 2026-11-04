@@ -91,6 +91,31 @@ export function sideAlertsDue(st, nowMs, tz) {
   return out;
 }
 
+/* ---------- meeting alerts: 10 minutes before ---------- */
+const keyUTC = (k) => { const [y, m, d] = k.split("-").map(Number); return Date.UTC(y, m - 1, d); };
+export function occursOn(e, k) {
+  if (k < e.date || (e.skips || []).includes(k)) return false;
+  if (!e.repeat) return k === e.date;
+  const a = keyUTC(e.date), b = keyUTC(k), dow = new Date(b).getUTCDay(), diff = Math.round((b - a) / 86400000);
+  if (e.repeat === "daily") return true;
+  if (e.repeat === "weekdays") return dow >= 1 && dow <= 5;
+  if (e.repeat === "weekly") return diff % 7 === 0;
+  if (e.repeat === "biweekly") return diff % 14 === 0;
+  if (e.repeat === "monthly") return new Date(a).getUTCDate() === new Date(b).getUTCDate();
+  return false;
+}
+export function meetingAlertsDue(st, L) {
+  const out = [], nowM = L.h * 60 + L.min;
+  for (const e of (st && st.events) || []) {
+    if (e.kind !== "meeting" || !occursOn(e, L.key) || (e.done || {})[L.key]) continue;
+    const [h, m] = e.start.split(":").map(Number), startM = h * 60 + m;
+    if (nowM < startM - 10 || nowM >= startM) continue;
+    const mins = startM - nowM;
+    out.push({ questId: `${e.id}:${L.key}`, kind: "meet10", msg: { title: `[SYSTEM] Encounter in ${mins} minute${mins === 1 ? "" : "s"}`, body: `${e.title} begins at ${new Date(Date.UTC(2000, 0, 1, h, m)).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "UTC" })}. Check it off after it starts for 3 XP.`, tag: `meet-${e.id}-${L.key}` } });
+  }
+  return out;
+}
+
 /* ---------- handler ---------- */
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
@@ -142,7 +167,8 @@ Deno.serve(async (req) => {
         const { data } = await db.from("skill_state").select("data").eq("user_id", uid).maybeSingle();
         states.set(uid, data?.data ?? null);
       }
-      const alerts = sideAlertsDue(states.get(uid), now.getTime(), list[0].tz || "America/Chicago");
+      const tz0 = list[0].tz || "America/Chicago";
+      const alerts = [...sideAlertsDue(states.get(uid), now.getTime(), tz0), ...meetingAlertsDue(states.get(uid), localParts(now, tz0))];
       for (const a of alerts) {
         const { error: dup } = await db.from("side_alerts").insert({ user_id: uid, quest_id: a.questId, kind: a.kind });
         if (dup) continue; // already sent
