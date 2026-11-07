@@ -70,23 +70,52 @@ export function buildMessage(st, L, slot, times) {
 }
 
 /* ---------- side quest alerts: 4h, 1h, and at the due time ---------- */
-const ALERTS = [["4h", 4 * 3600000], ["1h", 3600000], ["due", 0]];
+const ALERTS = [["1w", 7 * 86400000], ["3d", 3 * 86400000], ["1d", 86400000], ["4h", 4 * 3600000], ["1h", 3600000], ["due", 0]];
+const AHEAD = { "1w": "1 week", "3d": "3 days", "1d": "1 day", "4h": "4 hours", "1h": "1 hour" };
 const WINDOW = 20 * 60000; // fire if we're within 20 min after the alert time
 export function sideAlertsDue(st, nowMs, tz) {
   const out = [];
   for (const q of (st && st.sideQuests) || []) {
     if (q.done || !q.dueAt) continue;
+    const chosen = q.reminders ? q.reminders.deadline || [] : ["4h", "1h", "due"];
     for (const [kind, off] of ALERTS) {
+      if (!chosen.includes(kind)) continue;
       const fireAt = q.dueAt - off;
       if (off && q.createdAt && q.createdAt > fireAt) continue; // created inside this window: skip
       if (nowMs < fireAt || nowMs >= fireAt + WINDOW) continue;
       const time = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" }).format(new Date(q.dueAt));
       const xp = Math.round(({ E: 10, C: 20, A: 30, S: 50 }[q.rank] || 20) * 1.1);
-      const msg = kind === "4h" ? { title: "[SYSTEM] Side Quest due in 4 hours", body: `${q.title} · due ${time}. Finish early for ${xp} XP.` }
-        : kind === "1h" ? { title: "[SYSTEM] Warning: Side Quest due in 1 hour", body: `${q.title} · due ${time}. ${xp} XP is still on the table.` }
-        : { title: "[SYSTEM] Side Quest deadline reached", body: `${q.title} is due now. Overdue quests earn no XP.` };
+      const when = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", month: "short", day: "numeric" }).format(new Date(q.dueAt));
+      const steps = (q.checklist || []).length ? ` ${(q.checklist || []).filter((c) => c.done).length}/${q.checklist.length} steps done.` : "";
+      const msg = kind === "due" ? { title: "[SYSTEM] Side Quest deadline reached", body: `${q.title} is due now. Overdue quests earn no XP.` }
+        : kind === "1h" ? { title: "[SYSTEM] Warning: Side Quest due in 1 hour", body: `${q.title} · due ${time}.${steps} ${xp} XP is still on the table.` }
+        : { title: `[SYSTEM] Side Quest due in ${AHEAD[kind]}`, body: `${q.title} · due ${kind === "4h" ? time : `${when}, ${time}`}.${steps} Finish early for ${xp} XP.` };
       out.push({ questId: q.id, kind, msg: { ...msg, tag: `side-${q.id}-${kind}` } });
     }
+  }
+  return out;
+}
+
+/* ---------- nudges: daily or weekly until the quest is done ---------- */
+export function nudgeAlertsDue(st, L) {
+  const out = [], nowM = L.h * 60 + L.min;
+  for (const q of (st && st.sideQuests) || []) {
+    const n = q.reminders && q.reminders.nudge;
+    if (q.done || !n) continue;
+    if (q.startDate && L.key < q.startDate) continue;
+    if (n.freq === "weekly" && L.dow !== Number(n.dow)) continue;
+    const [h, m] = (n.time || "19:00").split(":").map(Number), t = h * 60 + m;
+    if (nowM < t || nowM >= t + 20) continue;
+    const startKey = q.startDate || localParts(new Date(q.createdAt || Date.now()), L.tz).key;
+    const day = Math.max(1, Math.round((keyUTC(L.key) - keyUTC(startKey)) / 86400000) + 1);
+    const cl = q.checklist || [], steps = cl.length ? ` · ${cl.filter((c) => c.done).length}/${cl.length} steps done` : "";
+    let due = "";
+    if (q.dueAt) {
+      const dk = localParts(new Date(q.dueAt), L.tz).key, dd = Math.round((keyUTC(dk) - keyUTC(L.key)) / 86400000);
+      due = q.dueAt < Date.now() ? " · OVERDUE" : dd === 0 ? " · due today" : dd === 1 ? " · due tomorrow" : ` · due in ${dd} days`;
+    }
+    const next = cl.find((c) => !c.done);
+    out.push({ questId: q.id, kind: `nudge-${L.key}`, msg: { title: "[SYSTEM] Side Quest in progress", body: `${q.title} · day ${day}${steps}${due}.${next ? ` Next step: ${next.text}` : ""}`, tag: `nudge-${q.id}` } });
   }
   return out;
 }
@@ -168,7 +197,7 @@ Deno.serve(async (req) => {
         states.set(uid, data?.data ?? null);
       }
       const tz0 = list[0].tz || "America/Chicago";
-      const alerts = [...sideAlertsDue(states.get(uid), now.getTime(), tz0), ...meetingAlertsDue(states.get(uid), localParts(now, tz0))];
+      const alerts = [...sideAlertsDue(states.get(uid), now.getTime(), tz0), ...meetingAlertsDue(states.get(uid), localParts(now, tz0)), ...nudgeAlertsDue(states.get(uid), localParts(now, tz0))];
       for (const a of alerts) {
         const { error: dup } = await db.from("side_alerts").insert({ user_id: uid, quest_id: a.questId, kind: a.kind });
         if (dup) continue; // already sent

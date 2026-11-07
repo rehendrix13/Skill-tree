@@ -221,7 +221,8 @@ function find(tree, kind, id) {
 }
 function findQuest(qid) {
   for (const tree of state.trees) { const r = find(tree, "quest", qid); if (r.quest) return { tree, ...r }; }
-  return {};
+  const sq = (state.sideQuests || []).find((x) => x.id === qid);
+  return sq ? { quest: sq, side: true } : {};
 }
 const nodeDone = (n) => n.quests.length > 0 && n.quests.every((q) => q.done);
 const nodeOpen = (b, i) => i === 0 || nodeDone(b.nodes[i - 1]);
@@ -273,7 +274,8 @@ function openModal({ title, text, fields = [], confirm = "Save", danger = false,
     <form class="modal" id="modal-form" role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <h2 id="modal-title">${esc(title)}</h2>
       ${text ? `<p>${esc(text)}</p>` : ""}
-      ${fields.map((f) => `
+      ${fields.map((f) => f.type === "heading" ? `<div class="field-head"><b>${esc(f.label)}</b>${f.hint ? `<small>${esc(f.hint)}</small>` : ""}</div>` : f.type === "checks" ? `
+        <fieldset class="field checks"><legend>${esc(f.label)}</legend><div class="check-grid">${f.options.map((o) => `<label class="check-pill"><input type="checkbox" name="${f.id}" value="${esc(o.value)}" ${(f.value || []).includes(o.value) ? "checked" : ""}><span>${esc(o.label)}</span></label>`).join("")}</div></fieldset>` : `
         <div class="field">
           <label for="f-${f.id}">${esc(f.label)}</label>
           ${f.type === "textarea"
@@ -309,6 +311,13 @@ document.addEventListener("submit", (e) => {
     entry.note = (e.target.elements.note.value || "").trim();
     save(); render(); toast("Reflection saved"); return;
   }
+  if (e.target.dataset?.stepAdd) {
+    e.preventDefault();
+    const q = state.sideQuests.find((x) => x.id === e.target.dataset.stepAdd), text = (e.target.elements.step.value || "").trim();
+    if (!q || !text) return;
+    (q.checklist ||= []).push({ id: uid(), text, done: false });
+    save(); render(); document.getElementById(`sa-${q.id}`)?.focus(); return;
+  }
   const qid = e.target.dataset?.questNote;
   if (qid) {
     e.preventDefault();
@@ -322,11 +331,13 @@ document.addEventListener("submit", (e) => {
   }
   if (e.target.id !== "modal-form") return;
   e.preventDefault();
-  const vals = Object.fromEntries(new FormData(e.target).entries());
-  for (const k in vals) vals[k] = vals[k].trim();
+  const fd = new FormData(e.target), vals = {};
+  for (const [k, v] of fd.entries()) vals[k] = typeof v === "string" ? v.trim() : v;
+  e.target.querySelectorAll("fieldset.checks").forEach((fs) => { const n = fs.querySelector("input")?.name; if (n) vals[n] = fd.getAll(n); });
   const fn = modalSubmit; closeModal();
   if (fn) { fn(vals); save(); render(); }
 });
+document.addEventListener("toggle", (e) => { if (e.target.matches?.("details[data-backlog]")) ui.backlogOpen = e.target.open; }, true);
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { closeModal(); return; }
   if ((e.key === "Enter" || e.key === " ") && e.target.matches?.("g[data-action], [role=button][data-action]:not(button)")) { e.preventDefault(); e.target.dispatchEvent(new MouseEvent("click", { bubbles: true })); }
@@ -337,14 +348,21 @@ document.addEventListener("keydown", (e) => {
 const SIDE_RANKS = ["E", "C", "A", "S"];
 const DAY_MS = 86400000;
 const REPEATS = [["", "Doesn't repeat"], ["daily", "Every day"], ["weekdays", "Every weekday (Mon–Fri)"], ["weekly", "Every week"], ["biweekly", "Every 2 weeks"], ["monthly", "Every month"]];
-const sideBonusXP = (q) => Math.round(RANK_XP[q.rank] * 1.1);
+const sideBonusXP = (q) => (q.dueAt ? Math.round(RANK_XP[q.rank] * 1.1) : RANK_XP[q.rank]);
 function sidePenalty(q, now = Date.now()) {
-  // after 24h overdue and still not done: -10 XP per day
+  // timed quests only: after 24h overdue and still not done, -10 XP per day
+  if (!q.dueAt) return 0;
   const end = q.done ? q.completedAt : now, over = end - q.dueAt;
   return over >= DAY_MS ? Math.floor(over / DAY_MS) * 10 : 0;
 }
 const sideXPNet = () => (state.sideQuests || []).reduce((a, q) => a + (q.done ? q.xp || 0 : 0) - sidePenalty(q), 0);
-const isOverdue = (q, now = Date.now()) => !q.done && q.dueAt < now;
+const isOverdue = (q, now = Date.now()) => !q.done && !!q.dueAt && q.dueAt < now;
+const isStarted = (q) => !q.startDate || q.startDate <= today();
+const DEADLINE_OPTS = [["1w", "1 week before"], ["3d", "3 days before"], ["1d", "1 day before"], ["4h", "4 hours before"], ["1h", "1 hour before"], ["due", "At due time"]];
+const DEFAULT_DEADLINE = ["4h", "1h", "due"];
+const deadlineOf = (q) => (q.reminders ? q.reminders.deadline || [] : DEFAULT_DEADLINE);
+const stepsOf = (q) => q.checklist || [];
+const stepCount = (q) => { const c = stepsOf(q); return c.length ? `${c.filter((x) => x.done).length}/${c.length}` : ""; };
 function nextDue(ms, rep) {
   const d = new Date(ms);
   if (rep === "daily") d.setDate(d.getDate() + 1);
@@ -355,20 +373,22 @@ function nextDue(ms, rep) {
   return d.getTime();
 }
 function spawnNext(q) {
-  if (!q.repeat) return null;
+  if (!q.repeat || !q.dueAt) return null;
   let due = nextDue(q.dueAt, q.repeat);
   while (due <= Date.now()) due = nextDue(due, q.repeat);
-  const n = { id: uid(), title: q.title, desc: q.desc, rank: q.rank, repeat: q.repeat, dueAt: due, createdAt: Date.now(), done: false };
+  const n = { id: uid(), title: q.title, desc: q.desc, rank: q.rank, repeat: q.repeat, dueAt: due, createdAt: Date.now(), done: false,
+    reminders: q.reminders ? JSON.parse(JSON.stringify(q.reminders)) : undefined,
+    checklist: stepsOf(q).map((c) => ({ id: uid(), text: c.text, done: false })) };
   state.sideQuests.push(n);
   return n;
 }
 function completeSide(q) {
   if (q.done) return;
   const before = levelFor(totalXP());
-  q.done = true; q.completedAt = Date.now();
-  q.xp = q.completedAt <= q.dueAt ? sideBonusXP(q) : 0;
+  q.done = true; q.completedAt = Date.now(); q.pinned = false;
+  q.xp = !q.dueAt ? RANK_XP[q.rank] : q.completedAt <= q.dueAt ? sideBonusXP(q) : 0;
   const n = spawnNext(q);
-  toast(q.xp ? `Side Quest complete · +${q.xp} XP (early bonus)` : "Side Quest complete · overdue, no XP");
+  toast(!q.dueAt ? `Side Quest complete · +${q.xp} XP` : q.xp ? `Side Quest complete · +${q.xp} XP (early bonus)` : "Side Quest complete · overdue, no XP");
   if (n) setTimeout(() => toast(`Next one: ${fmtDue(n.dueAt)}`), 1400);
   const after = levelFor(totalXP());
   if (after > before) setTimeout(() => toast(`LEVEL UP! You are now Level ${after}`), 2600);
@@ -378,6 +398,7 @@ function uncompleteSide(q) {
 }
 const timeStr = (ms) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 function fmtDue(ms) {
+  if (!ms) return "No due date";
   const d = new Date(ms), k = dayKey(d), t = new Date(), tm = new Date(t); tm.setDate(t.getDate() + 1);
   const day = k === dayKey(t) ? "Today" : k === dayKey(tm) ? "Tomorrow" : d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   return `${day} · ${timeStr(ms)}`;
@@ -387,71 +408,113 @@ function relTime(ms) {
   const str = h >= 48 ? `${Math.floor(h / 24)}d` : h ? `${h}h ${m}m` : `${m}m`;
   return diff >= 0 ? `in ${str}` : `${str} ago`;
 }
+const fmtDay = (k) => new Date(`${k}T12:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 function sideStatus(q) {
   if (q.done) return { cls: "done", label: q.xp ? `Done · +${q.xp} XP` : "Done late · 0 XP" };
   if (isOverdue(q)) { const pen = sidePenalty(q); return { cls: "overdue", label: `Overdue${pen ? ` · −${pen} XP` : ""}` }; }
+  if (!q.dueAt) return { cls: "open backlog", label: `+${RANK_XP[q.rank]} XP` };
   return { cls: "open", label: `+${sideBonusXP(q)} XP if done on time` };
 }
+const hasReminders = (q) => (q.dueAt && deadlineOf(q).length) || (q.reminders && q.reminders.nudge);
 function sideItem(q) {
-  const st = sideStatus(q);
+  const st = sideStatus(q), steps = stepCount(q), notes = (q.notes || []).length;
+  const when = q.done ? `Completed ${timeStr(q.completedAt)}` : !isStarted(q) ? `Starts ${fmtDay(q.startDate)}` : q.dueAt ? `${fmtDue(q.dueAt)} · ${relTime(q.dueAt)}` : "Backlog";
   return `
   <li class="sq ${st.cls}">
     <label class="sq-check" for="sq-c-${q.id}"><input type="checkbox" id="sq-c-${q.id}" data-side="${q.id}" ${q.done ? "checked" : ""}></label>
     <button type="button" class="sq-body" data-action="sheet-side" data-id="${q.id}">
-      <span class="sq-top"><b class="sq-rank r-${q.rank}">${q.rank}</b><span class="sq-title">${esc(q.title)}</span>${q.repeat ? `<span class="sq-rep" title="Repeats">↻</span>` : ""}</span>
-      <span class="sq-meta"><span>${q.done ? `Completed ${timeStr(q.completedAt)}` : `${fmtDue(q.dueAt)} · ${relTime(q.dueAt)}`}</span><span class="sq-state">${st.label}</span></span>
+      <span class="sq-top"><b class="sq-rank r-${q.rank}">${q.rank}</b><span class="sq-title">${esc(q.title)}</span>${q.repeat ? `<span class="sq-rep" title="Repeats">↻</span>` : ""}${hasReminders(q) ? `<span class="sq-rep" title="Reminders on">🔔</span>` : ""}</span>
+      ${steps ? `<span class="sq-steps"><span class="bar"><i style="width:${(stepsOf(q).filter((x) => x.done).length / stepsOf(q).length) * 100}%"></i></span><small>${steps} steps</small></span>` : ""}
+      <span class="sq-meta"><span>${when}${notes ? ` · ${notes} note${notes === 1 ? "" : "s"}` : ""}</span><span class="sq-state">${st.label}</span></span>
     </button>
+    ${q.done ? "" : `<button type="button" class="pin sq-pin ${q.pinned ? "on" : ""}" data-action="pin" data-id="${q.id}" aria-pressed="${!!q.pinned}" aria-label="${q.pinned ? "Remove from Focus" : "Add to Focus"}">${q.pinned ? "★" : "☆"}</button>`}
   </li>`;
 }
-function sideFormFields(q = {}, presetDate) {
+const hhmmOf = (d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+function sideFormFields(q = {}, presetDate, backlog) {
+  const isNew = !q.id;
   const base = q.dueAt ? new Date(q.dueAt) : (() => { const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 2); return d; })();
-  const dateVal = presetDate || dayKey(base);
-  const timeVal = `${String(base.getHours()).padStart(2, "0")}:${String(base.getMinutes()).padStart(2, "0")}`;
+  const dateVal = q.id ? (q.dueAt ? dayKey(base) : "") : backlog ? "" : presetDate || dayKey(base);
+  const nudge = q.reminders?.nudge;
   return [
     { id: "title", label: "Quest title", value: q.title || "", required: true, placeholder: "e.g. Renew car registration" },
-    { id: "desc", label: "Description (optional)", type: "textarea", value: q.desc || "", placeholder: "Details, links, steps…" },
-    { id: "date", label: "Due date", type: "date", value: dateVal },
-    { id: "time", label: "Due time", type: "time", value: timeVal },
-    { id: "rank", label: "Difficulty", type: "select", value: q.rank || "C", options: SIDE_RANKS.map((r) => ({ value: r, label: `${r}-Rank · ${RANK_XP[r]} XP (+10% if early: ${Math.round(RANK_XP[r] * 1.1)})` })) },
-    { id: "repeat", label: "Repeat", type: "select", value: q.repeat || "", options: REPEATS.map(([v, l]) => ({ value: v, label: l })) },
+    { id: "desc", label: "Description (optional)", type: "textarea", value: q.desc || "", placeholder: "Details, links…" },
+    { id: "rank", label: "Difficulty", type: "select", value: q.rank || "C", options: SIDE_RANKS.map((r) => ({ value: r, label: `${r}-Rank · ${RANK_XP[r]} XP` })) },
+    { type: "heading", label: "When", hint: "Leave the due date blank to keep it in your Backlog." },
+    { id: "date", label: "Due date (optional)", type: "date", value: dateVal },
+    { id: "time", label: "Due time", type: "time", value: hhmmOf(base) },
+    { id: "start", label: "Start date (optional · hidden until then)", type: "date", value: q.startDate || "" },
+    { id: "repeat", label: "Repeat (needs a due date)", type: "select", value: q.repeat || "", options: REPEATS.map(([v, l]) => ({ value: v, label: l })) },
+    ...(isNew ? [{ id: "steps", label: "Checklist steps (optional, one per line)", type: "textarea", value: "", placeholder: "Gather documents\nBook appointment\nSubmit form" }] : []),
+    { type: "heading", label: "Reminders", hint: "Optional. Deadline alerts need a due date; nudges work on any quest." },
+    { id: "deadline", label: "Deadline alerts", type: "checks", value: q.id ? deadlineOf(q) : backlog ? [] : DEFAULT_DEADLINE, options: DEADLINE_OPTS.map(([v, l]) => ({ value: v, label: l })) },
+    { id: "nudge", label: "Nudge me until it's done", type: "select", value: nudge ? nudge.freq : "", options: [{ value: "", label: "Off" }, { value: "daily", label: "Every day" }, { value: "weekly", label: "Every week" }] },
+    { id: "ndow", label: "Nudge day (weekly)", type: "select", value: String(nudge?.dow ?? new Date().getDay()), options: DAY_NAMES.map((d, i) => ({ value: String(i), label: d })) },
+    { id: "ntime", label: "Nudge time", type: "time", value: nudge?.time || "19:00" },
   ];
 }
 const parseDue = (v) => new Date(`${v.date}T${v.time || "09:00"}`).getTime();
-function openSideForm(q, presetDate) {
+function openSideForm(q, presetDate, backlog) {
   openModal({
-    title: q ? "Edit Side Quest" : "New Side Quest",
-    text: q ? "" : "Alerts at 4 hours, 1 hour, and when it's due. Finish early for +10% XP.",
-    fields: sideFormFields(q || {}, presetDate), confirm: q ? "Save" : "Accept quest",
+    title: q ? "Edit Side Quest" : backlog ? "New Backlog Quest" : "New Side Quest",
+    text: q ? "" : "Finish timed quests early for +10% XP. Backlog quests have no deadline or penalties.",
+    fields: sideFormFields(q || {}, presetDate, backlog), confirm: q ? "Save" : "Accept quest",
     onSubmit: (v) => {
-      if (!v.title || !v.date) return;
-      const due = parseDue(v);
-      if (isNaN(due)) { toast("Pick a valid date and time"); return; }
+      if (!v.title) return;
+      const due = v.date ? parseDue(v) : null;
+      if (v.date && isNaN(due)) { toast("Pick a valid date and time"); return; }
+      const reminders = { deadline: due ? v.deadline || [] : [], nudge: v.nudge ? { freq: v.nudge, time: v.ntime || "19:00", dow: Number(v.ndow) } : null };
+      const repeat = due ? v.repeat || "" : "";
+      if (v.repeat && !due) setTimeout(() => toast("Repeat needs a due date, so it was turned off"), 1500);
+      const data = { title: v.title, desc: v.desc, rank: v.rank, repeat, dueAt: due, startDate: v.start || "", reminders };
       if (q) {
         const moved = q.dueAt !== due;
-        Object.assign(q, { title: v.title, desc: v.desc, rank: v.rank, repeat: v.repeat || "", dueAt: due });
+        Object.assign(q, data);
         if (moved) { const old = q.id; q.id = uid(); q.createdAt = Date.now(); if (ui.sheet && ui.sheet.id === old) ui.sheet.id = q.id; }
         toast("Side Quest updated");
       } else {
-        state.sideQuests.push({ id: uid(), title: v.title, desc: v.desc, rank: v.rank, repeat: v.repeat || "", dueAt: due, createdAt: Date.now(), done: false });
-        toast(`Side Quest accepted · due ${fmtDue(due)}`);
+        const checklist = (v.steps || "").split("\n").map((x) => x.trim()).filter(Boolean).map((text) => ({ id: uid(), text, done: false }));
+        state.sideQuests.push({ id: uid(), ...data, checklist, notes: [], createdAt: Date.now(), done: false });
+        toast(due ? `Side Quest accepted · due ${fmtDue(due)}` : "Added to your Backlog");
       }
     },
   });
 }
+function reminderSummary(q) {
+  const parts = [];
+  if (q.dueAt) { const d = deadlineOf(q); if (d.length) parts.push(DEADLINE_OPTS.filter(([v]) => d.includes(v)).map(([, l]) => l.replace(" before", "").replace("At due time", "at due time")).join(", ")); }
+  const n = q.reminders?.nudge;
+  if (n) parts.push(`Nudge ${n.freq === "daily" ? "daily" : `every ${DAY_NAMES[n.dow]}`} at ${fmtHM(n.time)}`);
+  return parts.length ? parts.join(" · ") : "Off";
+}
 function sideSheetHtml(q) {
-  const st = sideStatus(q), rep = REPEATS.find(([v]) => v === (q.repeat || ""))[1];
+  const st = sideStatus(q), rep = REPEATS.find(([v]) => v === (q.repeat || ""))[1], steps = stepsOf(q);
   return `
     <div class="sheet-head">
       <svg width="46" height="46" viewBox="0 0 46 46" aria-hidden="true"><polygon class="s-hex ${q.done ? "done" : isOverdue(q) ? "over" : "open"}" points="${hexPts(23, 23, 20)}"/><text x="23" y="28" text-anchor="middle" class="s-rank ${q.done ? "done" : "open"}">${q.rank}</text></svg>
-      <div><div class="sys-label" style="color:var(--gold)">Side Quest</div><h2>${esc(q.title)}</h2></div>
+      <div style="flex:1"><div class="sys-label" style="color:var(--gold)">${q.dueAt ? "Side Quest" : "Backlog Quest"}</div><h2>${esc(q.title)}</h2></div>
+      ${q.done ? "" : `<button type="button" class="pin big ${q.pinned ? "on" : ""}" data-action="pin" data-id="${q.id}" aria-pressed="${!!q.pinned}" aria-label="${q.pinned ? "Remove from Focus" : "Add to Focus"}">${q.pinned ? "★" : "☆"}</button>`}
     </div>
-    <div class="chiprow"><span class="state ${st.cls === "overdue" ? "over" : st.cls}">${esc(st.label)}</span>${q.repeat ? `<span class="state open">↻ ${esc(rep)}</span>` : ""}</div>
+    <div class="chiprow"><span class="state ${st.cls === "overdue" ? "over" : st.cls.split(" ")[0]}">${esc(st.label)}</span>${q.repeat ? `<span class="state open">↻ ${esc(rep)}</span>` : ""}${q.pinned ? `<span class="state" style="color:var(--gold)">★ Focus</span>` : ""}</div>
     <div class="sq-facts">
-      <div><span>Due</span><b>${fmtDue(q.dueAt)}</b><small>${q.done ? "" : relTime(q.dueAt)}</small></div>
-      <div><span>Reward</span><b>${RANK_XP[q.rank]} XP</b><small>${sideBonusXP(q)} if early</small></div>
+      <div><span>Due</span><b>${q.dueAt ? fmtDue(q.dueAt) : "Backlog"}</b><small>${q.done || !q.dueAt ? (q.startDate ? `Starts ${fmtDay(q.startDate)}` : "") : relTime(q.dueAt)}</small></div>
+      <div><span>Reward</span><b>${RANK_XP[q.rank]} XP</b><small>${q.dueAt ? `${sideBonusXP(q)} if early` : "No deadline"}</small></div>
     </div>
+    <div class="sq-rem"><span>🔔 Reminders</span><b>${esc(reminderSummary(q))}</b></div>
     ${q.desc ? `<p class="sq-desc">${esc(q.desc)}</p>` : ""}
     ${isOverdue(q) ? `<p class="sheet-note" style="color:var(--danger)">Overdue quests earn no XP. After 24 hours overdue, you lose 10 XP per day until it's done.</p>` : ""}
+    <section class="sq-sec">
+      <h3>Checklist ${steps.length ? `<small>${stepCount(q)}</small>` : ""}</h3>
+      ${steps.length ? `<div class="bar"><i style="width:${(steps.filter((x) => x.done).length / steps.length) * 100}%"></i></div>` : ""}
+      <ul class="steps">${steps.map((c) => `
+        <li><label for="st-${c.id}"><input type="checkbox" id="st-${c.id}" data-step="${c.id}" data-q="${q.id}" ${c.done ? "checked" : ""}><span>${esc(c.text)}</span></label>
+          <button type="button" class="note-del ${ui.pendingDel === c.id ? "arm" : ""}" data-action="del-step" data-id="${q.id}" data-note="${c.id}" aria-label="Delete step">${ui.pendingDel === c.id ? "Delete?" : "✕"}</button></li>`).join("")}</ul>
+      <form class="step-form" data-step-add="${q.id}"><label class="sr" for="sa-${q.id}">New step</label><input id="sa-${q.id}" name="step" type="text" placeholder="Add a step"><button class="btn ghost" type="submit">Add</button></form>
+    </section>
+    <section class="sq-sec">
+      <h3>Progress notes</h3>
+      ${notesBlockOpen(q)}
+    </section>
     <div class="btnrow">
       ${q.done ? `<button class="btn ghost" type="button" data-action="side-undo" data-id="${q.id}">Mark not done</button>`
         : `<button class="btn" type="button" data-action="side-done" data-id="${q.id}">Complete quest</button>`}
@@ -459,6 +522,18 @@ function sideSheetHtml(q) {
       ${q.repeat && !q.done ? `<button class="btn ghost" type="button" data-action="side-skip" data-id="${q.id}">Skip this one</button>` : ""}
       <button class="btn danger" type="button" data-action="side-del" data-id="${q.id}">Delete</button>
     </div>`;
+}
+function notesBlockOpen(q) {
+  const notes = q.notes || [];
+  return `<div class="notes open-notes">
+    ${notes.slice().reverse().map((n) => `
+      <div class="note"><time>${fmtDate(n.at)}</time><p>${esc(n.text)}</p>
+        <button type="button" class="note-del ${ui.pendingDel === n.id ? "arm" : ""}" data-action="del-note" data-id="${q.id}" data-note="${n.id}" aria-label="Delete note">${ui.pendingDel === n.id ? "Delete?" : "✕"}</button></div>`).join("")}
+    <form class="note-form" data-quest-note="${q.id}">
+      <label class="sr" for="nt-${q.id}">New note</label>
+      <textarea id="nt-${q.id}" name="note" rows="2" placeholder="What progress did you make?"></textarea>
+      <button class="btn" type="submit">Add note</button>
+    </form></div>`;
 }
 
 /* ---------- events: meetings (3 XP) and time blocks on the day timeline ---------- */
@@ -548,7 +623,7 @@ function eventSheetHtml(e, k) {
 /* timeline items for a day: events + side quests due that day */
 function dayItems(k) {
   const items = eventsOn(k).map((e) => ({ kind: "event", e, s: toMin(e.start), en: Math.max(toMin(e.end), toMin(e.start) + 15) }));
-  (state.sideQuests || []).filter((q) => dayKey(new Date(q.dueAt)) === k).forEach((q) => {
+  (state.sideQuests || []).filter((q) => q.dueAt && dayKey(new Date(q.dueAt)) === k).forEach((q) => {
     const d = new Date(q.dueAt), m = d.getHours() * 60 + d.getMinutes();
     items.push({ kind: "side", q, s: m, en: m });
   });
@@ -788,6 +863,7 @@ function journalEntries() {
   state.disciplines.areas.forEach((a) => areaEntries(a).forEach((e) => out.push({ ...e, filter: a.id, label: `${a.stat} · ${e.kind === "done" ? "Completed" : "Note"}`, areaId: a.id })));
   state.trees.forEach((t) => t.branches.forEach((b) => b.nodes.forEach((n) => n.quests.forEach((q) => (q.notes || []).forEach((nt) =>
     out.push({ kind: "qnote", at: nt.at, text: nt.text, ctx: `${n.name}: ${q.text}`, filter: "quests", label: `${t.name}` }))))));
+  (state.sideQuests || []).forEach((q) => (q.notes || []).forEach((nt) => out.push({ kind: "qnote", at: nt.at, text: nt.text, ctx: q.title, filter: "quests", label: "Side Quest" })));
   return out.sort((x, y) => y.at - x.at);
 }
 function journalView() {
@@ -885,7 +961,7 @@ function calendarView() {
   <div class="topbar"><h1>Calendar</h1><div class="btnrow">${syncPill()}
     <div class="seg cal-seg" role="group" aria-label="View"><button type="button" class="${mode === "day" ? "on" : ""}" data-action="cal-mode" data-id="day">Day</button><button type="button" class="${mode === "month" ? "on" : ""}" data-action="cal-mode" data-id="month">Month</button></div></div></div>
   <div class="cal-layout mode-${mode}">
-    <aside class="cal-side">${monthPanel()}</aside>
+    <aside class="cal-side">${monthPanel()}${backlogSection()}</aside>
     <div class="cal-main">${weekStripCal(sel)}${timelineHtml(sel)}</div>
   </div>`;
 }
@@ -897,7 +973,7 @@ function monthPanel() {
   const sel = ui.calDay || today();
   const qs = state.sideQuests || [];
   const byDay = {};
-  qs.forEach((q) => { const k = dayKey(new Date(q.dueAt)); (byDay[k] ||= []).push(q); });
+  qs.filter((q) => q.dueAt).forEach((q) => { const k = dayKey(new Date(q.dueAt)); (byDay[k] ||= []).push(q); });
   const questDone = {};
   state.trees.forEach((t) => t.branches.forEach((b) => b.nodes.forEach((n) => n.quests.forEach((q) => { if (q.done && q.completedAt) { const k = dayKey(new Date(q.completedAt)); (questDone[k] ||= []).push({ q, n, t }); } }))));
   const cells = [];
@@ -1216,6 +1292,8 @@ function todayView() {
 
   ${prioritySection()}
 
+  ${backlogSection()}
+
   ${disciplineCard()}
 
   <section class="window t-daily">
@@ -1226,9 +1304,11 @@ function todayView() {
   </section>
 
   <section class="t-section">
-    <h2 class="t-h"><span>★ Focus</span><small>${pinned.length ? `${pinned.length} pinned` : ""}</small></h2>
-    ${pinned.length ? `<ul class="t-list">${pinned.map((i) => todayItem(i, { showTree: multi })).join("")}</ul>`
-      : `<p class="t-empty">Tap ☆ on a quest to pin it here, and keep this list short: 1 to 3 quests you'll actually do today.</p>`}
+    ${(() => { const sf = sideBuckets().focus, n = pinned.length + sf.length; return `
+    <h2 class="t-h"><span>★ Focus</span><small>${n ? `${n} pinned` : ""}</small></h2>
+    ${sf.length ? `<ul class="sq-list">${sf.map(sideItem).join("")}</ul>` : ""}
+    ${pinned.length ? `<ul class="t-list">${pinned.map((i) => todayItem(i, { showTree: multi })).join("")}</ul>` : ""}
+    ${!n ? `<p class="t-empty">Tap ☆ on any quest, side quest, or Backlog item to pin it here. Keep it to 1 to 3 things you'll actually do today.</p>` : ""}`; })()}
   </section>
 
   ${groups.map((g) => `
@@ -1248,10 +1328,15 @@ function todayView() {
 function sideBuckets() {
   const tk = today(), now = Date.now();
   const qs = state.sideQuests || [];
-  const priority = qs.filter((q) => !q.done && (dayKey(new Date(q.dueAt)) === tk || q.dueAt < now)).sort((a, b) => a.dueAt - b.dueAt);
+  const open = qs.filter((q) => !q.done && isStarted(q));
+  const focus = open.filter((q) => q.pinned).sort((a, b) => (a.dueAt || Infinity) - (b.dueAt || Infinity));
+  const priority = open.filter((q) => !q.pinned && q.dueAt && (dayKey(new Date(q.dueAt)) === tk || q.dueAt < now)).sort((a, b) => a.dueAt - b.dueAt);
   const doneToday = qs.filter((q) => q.done && dayKey(new Date(q.completedAt)) === tk).sort((a, b) => b.completedAt - a.completedAt);
-  const upcoming = qs.filter((q) => !q.done && q.dueAt > now && dayKey(new Date(q.dueAt)) !== tk).sort((a, b) => a.dueAt - b.dueAt);
-  return { priority, doneToday, upcoming };
+  const upcoming = open.filter((q) => !q.pinned && q.dueAt && q.dueAt > now && dayKey(new Date(q.dueAt)) !== tk).sort((a, b) => a.dueAt - b.dueAt);
+  const backlog = open.filter((q) => !q.pinned && !q.dueAt).sort((a, b) => SIDE_RANKS.indexOf(b.rank) - SIDE_RANKS.indexOf(a.rank) || a.createdAt - b.createdAt);
+  const later = qs.filter((q) => !q.done && !isStarted(q)).sort((a, b) => a.startDate.localeCompare(b.startDate));
+  const dueCount = open.filter((q) => q.dueAt && (dayKey(new Date(q.dueAt)) === tk || q.dueAt < now)).length;
+  return { focus, priority, doneToday, upcoming, backlog, later, dueCount };
 }
 function prioritySection() {
   const { priority, doneToday, upcoming } = sideBuckets();
@@ -1264,6 +1349,18 @@ function prioritySection() {
     ${upcoming.length ? `<details class="upcoming"><summary>Coming up · ${upcoming.length}</summary><ul class="sq-list">${upcoming.slice(0, 8).map(sideItem).join("")}</ul></details>` : ""}
   </section>`;
 }
+function backlogSection(open) {
+  const { backlog, later } = sideBuckets();
+  return `
+  <section class="t-section">
+    <details class="backlog" ${open || ui.backlogOpen ? "open" : ""} data-backlog>
+      <summary class="t-h"><span style="color:var(--accent)">Backlog</span><small>${backlog.length} quest${backlog.length === 1 ? "" : "s"} · ☆ to pull into Focus</small></summary>
+      ${backlog.length ? `<ul class="sq-list">${backlog.map(sideItem).join("")}</ul>` : `<p class="t-empty">Nothing in your Backlog. Quests without a due date land here.</p>`}
+      <button type="button" class="add-row" data-action="new-backlog" style="margin-top:8px">+ Backlog quest</button>
+      ${later.length ? `<details class="upcoming" style="margin-top:10px"><summary>Starts later · ${later.length}</summary><ul class="sq-list">${later.map(sideItem).join("")}</ul></details>` : ""}
+    </details>
+  </section>`;
+}
 function todayCard() {
   const { avail, cleared, pinned } = todayData();
   const preview = (pinned.length ? pinned : avail).slice(0, 3);
@@ -1272,7 +1369,7 @@ function todayCard() {
   <button class="today-card" type="button" data-action="today">
     <span class="row"><span class="sys-label">Today's Quest Board</span><span class="go">Open →</span></span>
     ${dsc ? `<span class="today-disc ${dsc.entry ? "done" : ""}"><b>${esc(dsc.area.stat)}</b> ${esc(dsc.area.name)}: ${esc(dsc.entry ? dsc.entry.text : dsc.text)}${dsc.entry ? " ✓" : ""}</span>` : ""}
-    ${(() => { const { priority } = sideBuckets(); return priority.length ? `<span class="today-pri"><b>${priority.length}</b> side quest${priority.length === 1 ? "" : "s"} due${priority.some((q) => isOverdue(q)) ? ` · <em>${priority.filter((q) => isOverdue(q)).length} overdue</em>` : ""}: ${esc(priority[0].title)}</span>` : ""; })()}
+    ${(() => { const { priority } = sideBuckets(); const pf = sideBuckets().focus; return pf.length ? `<span class="today-pri" style="color:var(--gold)"><b style="color:var(--gold)">★</b> ${esc(pf[0].title)}${pf.length > 1 ? ` +${pf.length - 1} more` : ""}</span>` + (priority.length ? `<span class="today-pri"><b>${priority.length}</b> more due: ${esc(priority[0].title)}</span>` : "") : priority.length ? `<span class="today-pri"><b>${priority.length}</b> side quest${priority.length === 1 ? "" : "s"} due${priority.some((q) => isOverdue(q)) ? ` · <em>${priority.filter((q) => isOverdue(q)).length} overdue</em>` : ""}: ${esc(priority[0].title)}</span>` : ""; })()}
     <span class="today-stats"><b>${avail.length}</b> available<span class="dot">·</span><b>${pinned.length}</b> pinned<span class="dot">·</span><b>${cleared.length}</b> cleared today</span>
     ${preview.length ? `<span class="today-prev">${preview.map((i) => `<span>${i.quest.pinned ? "★" : "▸"} ${esc(i.quest.text)}</span>`).join("")}</span>` : ""}
   </button>`;
@@ -1326,12 +1423,14 @@ function sheetHtml(t) {
 }
 function renderSheet() {
   const m = document.getElementById("modal");
+  const hadSheet = !!m.querySelector(".sheet");
+  const settle = () => { if (hadSheet) m.querySelector(".sheet")?.classList.add("no-anim"); };
   const t = getTree(ui.treeId);
   if (ui.sheet && ui.sheet.type === "ev") {
     const e = (state.events || []).find((x) => x.id === ui.sheet.id);
     if (!e) { ui.sheet = null; m.innerHTML = ""; return; }
     m.innerHTML = `<div class="sheet-bg" data-action="sheet-close"><section class="sheet" role="dialog" aria-modal="true"><div class="grab" aria-hidden="true"></div><button type="button" class="sheet-x" data-action="sheet-close" aria-label="Close">✕</button>${eventSheetHtml(e, ui.sheet.day)}</section></div>`;
-    return;
+    settle(); return;
   }
   if (ui.sheet && ui.sheet.type === "side") {
     const q = state.sideQuests.find((x) => x.id === ui.sheet.id);
@@ -1339,11 +1438,11 @@ function renderSheet() {
     const sc = m.querySelector(".sheet"), sct = sc ? sc.scrollTop : 0;
     m.innerHTML = `<div class="sheet-bg" data-action="sheet-close"><section class="sheet" role="dialog" aria-modal="true"><div class="grab" aria-hidden="true"></div><button type="button" class="sheet-x" data-action="sheet-close" aria-label="Close">✕</button>${sideSheetHtml(q)}</section></div>`;
     const ns2 = m.querySelector(".sheet"); if (ns2) ns2.scrollTop = sct;
-    return;
+    settle(); return;
   }
   if (!ui.sheet || !t || ui.view !== "tree") { if (m.querySelector(".sheet-bg")) m.innerHTML = ""; ui.sheet = null; return; }
   const scroller = m.querySelector(".sheet"), st = scroller ? scroller.scrollTop : 0;
-  m.innerHTML = sheetHtml(t);
+  m.innerHTML = sheetHtml(t); settle();
   const ns = m.querySelector(".sheet"); if (ns) ns.scrollTop = st;
 }
 
@@ -1480,7 +1579,7 @@ function settingsView() {
     <p>Erases all trees, progress, and your streak${session ? " on every synced device" : " on this device"}.</p>
     <div class="btnrow"><button class="btn danger" type="button" data-action="reset">Reset all data</button></div>
   </section>
-  <p class="foot">Skill Tree v1.9</p>`;
+  <p class="foot">Skill Tree v2.0</p>`;
 }
 
 function render() {
@@ -1504,7 +1603,7 @@ const TAB_OF = { home: "home", area: "home", journal: "home", settings: "home", 
 function renderTabbar() {
   const bar = document.getElementById("tabbar"); if (!bar) return;
   const cur = TAB_OF[ui.view] || "home";
-  const pri = sideBuckets().priority.length;
+  const pri = sideBuckets().dueCount;
   const tab = (key, label, icon, badge) => `<button type="button" class="tab ${cur === key ? "on" : ""}" data-action="tab" data-id="${key}" aria-current="${cur === key ? "page" : "false"}">${iconHtml(icon, 22)}${badge ? `<span class="badge">${badge}</span>` : ""}<span>${label}</span></button>`;
   bar.innerHTML = `${tab("home", "Home", "home")}${tab("today", "Today", "sun", pri)}
     <button type="button" class="tab-add" data-action="new-side" aria-label="New side quest"><span>${iconHtml("plus", 26)}</span></button>
@@ -1634,6 +1733,13 @@ document.addEventListener("click", (e) => {
       return;
     }
     case "pin": { const { quest } = findQuest(id); if (quest) { quest.pinned = !quest.pinned; if (quest.pinned) toast("Pinned to Focus"); } break; }
+    case "del-step": {
+      const nid = el.dataset.note;
+      if (ui.pendingDel !== nid) { ui.pendingDel = nid; render(); setTimeout(() => { if (ui.pendingDel === nid) { ui.pendingDel = null; render(); } }, 3000); return; }
+      const q = state.sideQuests.find((x) => x.id === id); if (q) q.checklist = stepsOf(q).filter((x) => x.id !== nid);
+      ui.pendingDel = null; break;
+    }
+    case "new-backlog": openSideForm(null, null, true); return;
     case "open-tree": ui.view = "tree"; ui.treeId = id; ui.edit = false; ui.zoom = null; ui.recenter = true; window.scrollTo(0, 0); break;
     case "toggle-edit": ui.edit = !ui.edit; ui.sheet = null; ui.recenter = true; break;
     case "mode-list": ui.mode = "list"; ui.sheet = null; break;
@@ -1803,6 +1909,11 @@ document.addEventListener("change", (e) => {
     const ev = state.events.find((x) => x.id === el.dataset.ev);
     if (ev && toggleEvent(ev, el.dataset.day, el.checked)) save(); else el.checked = !el.checked;
     render(); return;
+  }
+  if (el.dataset.step) {
+    const q = state.sideQuests.find((x) => x.id === el.dataset.q), c = q && stepsOf(q).find((x) => x.id === el.dataset.step);
+    if (c) { c.done = el.checked; save(); render(); if (el.checked && stepsOf(q).every((x) => x.done) && !q.done) toast("All steps done · complete the quest to claim XP"); }
+    return;
   }
   if (el.dataset.side) {
     const q = state.sideQuests.find((x) => x.id === el.dataset.side);
